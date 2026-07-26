@@ -1,45 +1,26 @@
 package com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring
 
-import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.models.ContentBlock
-import com.intellij.testFramework.IndexingTestUtil
-import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import java.nio.file.Files
-import java.nio.file.Path
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.testutil.McpPlatformTestCase
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-class ChangeSignatureBehaviorTest : BasePlatformTestCase() {
+class ChangeSignatureBehaviorTest : McpPlatformTestCase() {
 
-    private val json = Json { ignoreUnknownKeys = true }
-
-    private fun writeProjectFile(relativePath: String, content: String): Path {
-        val basePath = requireNotNull(project.basePath)
-        val path = Path.of(basePath, relativePath)
-        Files.createDirectories(path.parent)
-        Files.writeString(path, content)
-        requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByPath(path.toString())) {
-            "Failed to refresh VFS for test file $path"
-        }
-        IndexingTestUtil.waitUntilIndexesAreReady(project)
-        return path
-    }
-
-    private fun readProjectFileVfs(relativePath: String): String {
-        val basePath = requireNotNull(project.basePath)
-        com.intellij.psi.PsiDocumentManager.getInstance(project).commitAllDocuments()
-        com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().saveAllDocuments()
-        val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath("$basePath/$relativePath")
-            ?: return Files.readString(Path.of(basePath, relativePath))
-        val doc = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(vf)
-        return doc?.text ?: String(vf.contentsToByteArray())
-    }
-
-    fun testChangeSignatureAddsParameter() = runBlocking {
-        writeProjectFile("src/SigService.java", """
+    /**
+     * Caller updating is the whole point of Change Signature, so it is asserted in both
+     * directions.
+     *
+     * The source root registration is load-bearing, not decoration:
+     * `ChangeSignatureProcessor.findUsages` is index-backed and the default `project_files` scope
+     * only covers content roots. Without it the tool reports `success: true, changesCount: 1`,
+     * rewrites the declaration, and leaves `process("hello")` untouched — non-compiling Java that
+     * a one-directional `contains("boolean validate")` assertion happily certifies.
+     */
+    fun testChangeSignatureAddsParameterAndUpdatesCallSite() = runBlocking {
+        registerSourceRoot("sig-src")
+        writeProjectFile("sig-src/SigService.java", """
             public class SigService {
                 public String process(String input) {
                     return input.trim();
@@ -51,7 +32,7 @@ class ChangeSignatureBehaviorTest : BasePlatformTestCase() {
         """.trimIndent())
 
         val result = ChangeSignatureTool().execute(project, buildJsonObject {
-            put("file", "src/SigService.java")
+            put("file", "sig-src/SigService.java")
             put("line", 2)
             put("column", 19)
             put("newParameters", buildJsonArray {
@@ -60,9 +41,43 @@ class ChangeSignatureBehaviorTest : BasePlatformTestCase() {
             })
         })
 
-        assertFalse("Change signature should succeed: ${(result.content.singleOrNull() as? ContentBlock.Text)?.text}", result.isError)
-        val content = readProjectFileVfs("src/SigService.java")
-        assertTrue("Method should have new param: $content", content.contains("boolean validate"))
+        assertToolSucceeded("Change signature should succeed", result)
+        assertFileContains("sig-src/SigService.java", "public String process(String input, boolean validate)")
+        assertFileContains("sig-src/SigService.java", "process(\"hello\", true)")
+        assertFileDoesNotContain("sig-src/SigService.java", "process(\"hello\")")
+    }
+
+    fun testChangeSignatureUpdatesCallSiteInAnotherFile() = runBlocking {
+        registerSourceRoot("sig-cross")
+        writeProjectFile("sig-cross/Formatter.java", """
+            public class Formatter {
+                public String format(String raw) {
+                    return raw.trim();
+                }
+            }
+        """.trimIndent())
+        writeProjectFile("sig-cross/FormatterClient.java", """
+            public class FormatterClient {
+                public String run(Formatter formatter) {
+                    return formatter.format("value");
+                }
+            }
+        """.trimIndent())
+
+        val result = ChangeSignatureTool().execute(project, buildJsonObject {
+            put("file", "sig-cross/Formatter.java")
+            put("line", 2)
+            put("column", 19)
+            put("newParameters", buildJsonArray {
+                add(buildJsonObject { put("oldIndex", 0); put("name", "raw"); put("type", "String") })
+                add(buildJsonObject { put("oldIndex", -1); put("name", "upper"); put("type", "boolean"); put("defaultValue", "false") })
+            })
+        })
+
+        assertToolSucceeded("Cross-file change signature should succeed", result)
+        assertFileContains("sig-cross/Formatter.java", "public String format(String raw, boolean upper)")
+        assertFileContains("sig-cross/FormatterClient.java", "formatter.format(\"value\", false)")
+        assertFileDoesNotContain("sig-cross/FormatterClient.java", "formatter.format(\"value\")")
     }
 
     fun testChangeSignatureChangesReturnType() = runBlocking {
@@ -84,7 +99,7 @@ class ChangeSignatureBehaviorTest : BasePlatformTestCase() {
             })
         })
 
-        assertFalse("Change return type should succeed: ${(result.content.singleOrNull() as? ContentBlock.Text)?.text}", result.isError)
+        assertToolSucceeded("Change return type should succeed", result)
         val content = readProjectFileVfs("src/SigConverter.java")
         assertTrue("Return type should be int: $content", content.contains("public int convert"))
     }
@@ -103,8 +118,11 @@ class ChangeSignatureBehaviorTest : BasePlatformTestCase() {
             put("newReturnType", "String")
         })
 
-        val text = (result.content.singleOrNull() as? ContentBlock.Text)?.text ?: ""
-        assertTrue("Should fail on field: $text", result.isError || text.contains("No method"))
+        assertToolFailed("Change signature on a field should fail", result)
+        assertEquals(
+            "No method found at line 2, column 17. Position the cursor on a method name.",
+            toolText(result)
+        )
     }
 
     fun testChangeSignatureRequiresAtLeastOneChange() = runBlocking {
@@ -120,6 +138,10 @@ class ChangeSignatureBehaviorTest : BasePlatformTestCase() {
             put("column", 17)
         })
 
-        assertTrue("Should require at least one change", result.isError)
+        assertToolFailed("Should require at least one change", result)
+        assertEquals(
+            "At least one change is required: newName, newReturnType, newVisibility, or newParameters.",
+            toolText(result)
+        )
     }
 }

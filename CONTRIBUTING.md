@@ -10,22 +10,36 @@ Follow every rule here before opening a pull request.
 ### Local feedback loop (run these yourself)
 
 ```bash
-./gradlew test --tests "*UnitTest*"   # fast unit tests, no IDE needed (< 30 s)
-./gradlew runIde                       # launch sandboxed IDE with plugin installed
-./scripts/check-pr.sh                  # pre-push validation — run before every push
+./gradlew test -Ptier=unit   # fast headless tier, no IntelliJ Platform (~20 s)
+./gradlew test               # everything, platform tests included (~40 s)
+./gradlew runIde             # launch sandboxed IDE with plugin installed
+./scripts/check-pr.sh        # pre-push validation — run before every push
 ```
 
-### CI / maintainer-only (do not run locally unless explicitly asked)
+Run the full suite before pushing. Platform tests are part of your local loop, not a
+CI-only luxury — they are where tool behavior is actually verified.
+
+### CI / maintainer-only
 
 ```bash
-./gradlew test               # includes platform tests — times out on headless machines
-./gradlew build              # depends on ./gradlew test, same issue
-./gradlew runPluginVerifier  # Marketplace compatibility check — run in CI
+./gradlew build          # full build + tests + plugin artifact
+./gradlew verifyPlugin   # Marketplace compatibility check
 ```
 
-`./gradlew test` registers `TestFrameworkType.Platform` via `build.gradle.kts`, which means
-it includes platform tests that require a full IntelliJ Platform environment. Running it
-locally hangs on headless machines. Stick to `--tests "*UnitTest*"` for local iteration.
+### Notes on the test commands
+
+`-Ptier=unit` / `-Ptier=platform` exist because Gradle's `--tests` flag has **no negation
+operator** and OR-combines repeated occurrences. Earlier revisions of this file documented
+`--tests "*Test" --tests "!*UnitTest*"` for "platform tests only"; that command silently ran
+the entire suite, because `*Test` already matches every `*UnitTest` class and `!*UnitTest*` is
+a literal pattern matching nothing.
+
+This file also used to claim the platform tests "time out on headless machines." That was never
+substantiated: CI runs `./gradlew check` on `ubuntu-latest` with no xvfb and no `DISPLAY`, and
+the full suite completes locally in about 40 seconds. Run them.
+
+The task is `verifyPlugin`, not `runPluginVerifier` — the latter does not exist under the
+IntelliJ Platform Gradle Plugin 2.x used here.
 
 ---
 
@@ -122,10 +136,26 @@ confirm each has an entry: `README.md`, `USAGE.md`, `CLAUDE.md`, `SKILL.md`,
   - required fields are present / absent as expected
   - opt-in tool appears in `McpSettings.DEFAULT_DISABLED_TOOLS`
   - legacy `McpSettings.State(settingsSchemaVersion = 0)` migration keeps the tool disabled
+- [ ] **Regenerate the golden tool manifest** — a new tool changes the snapshot, so
+  `ToolManifestContractUnitTest` will fail until you do:
+
+  ```bash
+  ./gradlew test -Ptier=unit --tests "*ToolManifestContractUnitTest" -Dcontract.update=true
+  ```
+
+  Then re-run without the flag and **review the diff to
+  `src/test/resources/contract/tool-manifest.json` as part of the change**. The manifest is a
+  contract with MCP clients: the diff should show exactly your new tool and nothing else. If it
+  shows unrelated schema or description churn, something regressed — investigate before committing.
+  Never regenerate it to make an unexplained failure go away.
 - [ ] Update `ConstantsUnitTest.testToolNamesAllContainsEveryConstant` — add the new constant
   and verify `ToolNames.ALL.size` still matches
 - [ ] Update `ToolExecutionIntegrationTest.testAllToolsRegistered` — add the new constant
   in the same alphabetical position as in `ToolNames.ALL`
+- [ ] Add a **behavior test that executes the tool** and asserts on its real result, not just its
+  schema. A tool covered only by schema and registration assertions is a tool nobody has proven
+  works — see `SyncFilesToolBehaviorTest` / `ProjectStatusToolBehaviorTest` for the shape, and
+  extend `McpPlatformTestCase` so fixtures land on the real filesystem.
 - [ ] For opt-in features with a toggle (e.g. `lifecycleEnabled`): tests that exercise
   opt-in behaviour must enable the flag in `setUp()` and restore it in `tearDown()`
 
@@ -386,6 +416,41 @@ If a build file exists but the project is not linked, tell the user how to link 
 than claiming success.
 
 ---
+
+## Known gaps in the test suite
+
+Stated plainly, so nobody mistakes green for covered. The suite is strong against "a refactor
+dropped a tool or mutated an input schema" and good against "a Java refactoring stopped updating
+call sites". It is thin in these areas:
+
+- **No mock JDK.** `testFramework(TestFrameworkType.Plugin.Java)` is declared, but no test supplies
+  a `getProjectDescriptor()`, so fixtures run without an SDK and `java.lang.*` does not resolve.
+  Consequence: `GetDiagnosticsToolBehaviorTest`'s `contains("Cannot resolve")` assertions cannot
+  distinguish a deliberate error from the missing standard library. Wiring a descriptor with
+  `JAVA_LATEST` is the fix.
+- **No dumb-mode coverage.** `DumbModeTestUtils` is unused, so no test proves an index-backed tool
+  degrades gracefully during indexing instead of leaking a platform exception to the MCP client.
+- **No whole-file golden fixtures.** `configureByFile` / `checkResultByFile` are unused, so
+  formatting damage and collateral edits outside the asserted region are invisible. This matters
+  most for `ide_reformat_code` and `ide_optimize_imports`.
+- **Reflection-based language handlers are largely unverified.** Python, Go, PHP and Rust handlers
+  are reached only through reflection against plugins absent from the test classpath. The Python
+  hierarchy and call-hierarchy handlers have no automated coverage at all — verify changes to them
+  in the corresponding IDE by hand.
+- **Some tools are still never executed by any test**, only schema- and response-shape-checked:
+  `ide_build_project`, `ide_reload_project`, `ide_import_modules`, `ide_open_workspace`,
+  `ide_restart`, `ide_lifecycle_log`, `ide_set_lifecycle_log_file`, and `ide_run_tests` (only its
+  `parseTarget` helper is covered). `ide_reformat_code` has error paths only. Adding a behavior
+  test for one is a genuinely useful first contribution — see the checklist above for the shape.
+- **`SafeDeleteTool.findUsages` fails open.** It catches every exception from `ReferencesSearch`
+  and treats it as "no usages found", which routes straight into the deletion branch — so an
+  `IndexNotReadyException` or a language-plugin resolver failure can make a destructive,
+  default-enabled tool delete a symbol that is still referenced and report success. The same
+  applies to files outside any content root, which the search scope cannot see.
+  `SafeDeleteToolBehaviorTest` now pins the correct behavior when the search *does* work; the
+  fail-open path is a deliberate open question for the owner, not an oversight.
+
+If you close one of these, delete its bullet in the same PR.
 
 ## Smoke test protocol
 

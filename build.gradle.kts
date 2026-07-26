@@ -88,7 +88,17 @@ dependencies {
         bundledModules(providers.gradleProperty("platformBundledModules").map { it.split(',') })
 
         testFramework(TestFrameworkType.Platform)
+        // Makes LightJavaCodeInsightFixtureTestCase and the JAVA_* project descriptors available.
+        // NOTE: no test currently supplies a descriptor, so fixtures still run without an SDK and
+        // java.lang.* does not resolve. Wiring getProjectDescriptor() is the remaining half — see
+        // the "Known gaps" note in CONTRIBUTING.md.
+        testFramework(TestFrameworkType.Plugin.Java)
 
+        // `ide_list_tests` reads the `com.intellij.testFramework` extension point. The Java plugin
+        // declares that EP but ships no implementations, so without the JUnit plugin the extension
+        // list is empty and the tool can only ever return "No test frameworks are registered" —
+        // i.e. the tool is untestable. Test-scoped so production dependencies are unchanged.
+        testBundledPlugin("JUnit")
     }
 }
 
@@ -182,6 +192,41 @@ kover {
 tasks {
     wrapper {
         gradleVersion = providers.gradleProperty("gradleVersion").get()
+    }
+
+    test {
+        // Skips must be visible. A silently-skipped test is indistinguishable from a
+        // passing one in the console, which is how 16 JS/TS tests went years without
+        // executing.
+        testLogging {
+            events("skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+
+        // Gradle's -D lands on the daemon, not the forked test JVM, so it has to be forwarded
+        // explicitly for ToolManifestContractUnitTest's golden-file regeneration to see it.
+        providers.systemProperty("contract.update").orNull?.let {
+            systemProperty("contract.update", it)
+        }
+
+        // Tier selection: `./gradlew test -Ptier=unit` or `-Ptier=platform`.
+        //
+        // Gradle's `--tests` flag has no negation operator and OR-combines repeated
+        // occurrences, so the once-documented
+        //   --tests "*Test" --tests "!*UnitTest*"
+        // silently selected the entire suite. Filters are applied here instead, on the
+        // single Test task the IntelliJ Platform plugin fully configures — a separately
+        // registered Test task resolves to NO-SOURCE because it inherits none of that
+        // platform wiring.
+        when (providers.gradleProperty("tier").orNull) {
+            null, "all" -> Unit
+            "unit" -> filter { includeTestsMatching("*UnitTest") }
+            "platform" -> filter {
+                includeTestsMatching("*Test")
+                excludeTestsMatching("*UnitTest")
+            }
+            else -> throw GradleException("Unknown -Ptier value. Use: unit, platform, or all.")
+        }
     }
 
     // NOTE: publishPlugin intentionally does NOT depend on patchChangelog (upstream template

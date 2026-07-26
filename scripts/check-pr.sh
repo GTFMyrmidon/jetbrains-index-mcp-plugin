@@ -165,24 +165,115 @@ fi
 # ── 8. Code correctness — test skip honesty ──────────────────────────────────
 hdr "Test skip honesty"
 
-if [ -n "$UPSTREAM_BASE" ]; then
-    EARLY_RETURN=$(git diff "$UPSTREAM_BASE" HEAD -- src/test/ 2>/dev/null | grep -cE '^\+.*(if.*!.*available|if.*!.*require).*return' || true)
-    EARLY_RETURN=${EARLY_RETURN:-0}
-    if [ "$EARLY_RETURN" -gt 0 ] 2>/dev/null; then
-        fail "$EARLY_RETURN new early-return test skips — use Assume.assumeTrue() instead (CONTRIBUTING.md § Test honesty)"
-    else
-        ok "No early-return test skips in diff"
-    fi
+# Whole-tree, not diff-only: a diff-scoped check permanently grandfathers existing violations.
+#
+# Two rule sets, because the two shapes have different false-positive profiles:
+#
+#   A. A capability guard (`if (!javaAvailable) return`) is dishonest wherever it appears — in a
+#      helper it makes the helper a silent no-op and the caller's assertions run against an
+#      un-set-up fixture. Checked in every function.
+#
+#   B. An emptiness/null guard or an elvis bare return is only dishonest inside a test method,
+#      where it reports PASSED having asserted nothing. In a helper it is ordinary Kotlin —
+#      `setFieldIfPresent` in GetDiagnosticsToolBehaviorTest is a legitimate `?: return`.
+#      Scoped to `fun test*` bodies, tracking the innermost enclosing `fun` so a local function
+#      declared inside a test method is treated as the helper it is.
+#
+# A bare `return` is the tell in both cases: `return someValue` is control flow, `return` alone
+# after a guard is a skip. `if (expected == actual) return` survives on purpose — that is an
+# early exit on a satisfied assertion, not an unmet precondition.
+if SKIP_REPORT=$(python3 - <<'PYEOF'
+import re, sys
+from pathlib import Path
+
+CAPABILITY = r'(available|capabilit|supported|enabled)'
+EMPTY_OR_NULL = r'(isEmpty\(\)|isBlank\(\)|isNullOrEmpty\(\)|isNullOrBlank\(\)|==\s*null|!=\s*null)'
+BARE_RETURN = r'return(@\w+)?\s*(//.*)?$'
+
+FUN_DECL = re.compile(r'\bfun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?(\w+)\s*[(<]')
+CAPABILITY_GUARD = re.compile(r'if\s*\(.*' + CAPABILITY + r'.*\)\s*' + BARE_RETURN, re.IGNORECASE)
+EMPTY_GUARD = re.compile(r'if\s*\(.*' + EMPTY_OR_NULL + r'.*\)\s*' + BARE_RETURN)
+ELVIS_GUARD = re.compile(r'\?:\s*' + BARE_RETURN)
+STANDALONE_RETURN = re.compile(r'^\s*' + BARE_RETURN)
+CONDITION = re.compile(CAPABILITY + '|' + EMPTY_OR_NULL, re.IGNORECASE)
+
+offenders = []
+for path in sorted(Path('src/test').rglob('*.kt')):
+    enclosing = ''
+    previous = ''
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        code = line.split('//')[0]
+        decl = FUN_DECL.search(code)
+        if decl:
+            enclosing = decl.group(1)
+        in_test = enclosing.startswith('test')
+        hit = CAPABILITY_GUARD.search(line)
+        if not hit and in_test:
+            hit = (EMPTY_GUARD.search(line) or ELVIS_GUARD.search(line)
+                   # `if (roots.isEmpty())` on one line, `return` on the next.
+                   or (STANDALONE_RETURN.search(line) and CONDITION.search(previous)))
+        if hit:
+            offenders.append(f'{path}:{lineno}:{line.strip()}')
+        if code.strip():
+            previous = code
+for o in offenders:
+    print(o)
+sys.exit(1 if offenders else 0)
+PYEOF
+); then
+    ok "No early-return test skips"
+else
+    fail "Early-return test skips — use Assume.assumeTrue() instead (CONTRIBUTING.md § Test honesty)"
+    printf '%s\n' "$SKIP_REPORT" | head -10 | sed 's/^/      /'
 fi
 
-# ── 9. Unit tests ─────────────────────────────────────────────────────────────
-hdr "Unit tests"
+# ── 9. Plugin-detector impersonation ─────────────────────────────────────────
+hdr "Test tree hygiene"
 
-echo "  Running ./gradlew test --tests \"*UnitTest*\" ..."
-if ./gradlew test --tests "*UnitTest*" 2>&1 | grep -q "BUILD SUCCESSFUL"; then
-    ok "Unit tests pass"
+# A test class sitting at a PluginDetector fallback FQN makes that detector report its plugin
+# as available for the entire test fork (the result is cached `by lazy` on an object). See
+# src/test/kotlin/.../testutil/README.md and PluginDetectorLeakUnitTest.
+# The fallback FQNs are read from production so this check cannot drift.
+LEAKS=0
+while read -r FQN; do
+    [ -z "$FQN" ] && continue
+    CANDIDATE="src/test/kotlin/$(echo "$FQN" | tr '.' '/').kt"
+    if [ -f "$CANDIDATE" ]; then
+        fail "$CANDIDATE sits at PluginDetector fallback FQN '$FQN' — it will make that plugin appear available in every test. Use a duck-typed fake in the test's own package."
+        LEAKS=$((LEAKS+1))
+    fi
+done <<EOF
+$(grep -oE 'fallbackClass = "[^"]+"' src/main/kotlin/com/github/hechtcarmel/jetbrainsindexmcpplugin/util/PluginDetectors.kt 2>/dev/null | sed 's/fallbackClass = "//; s/"//')
+EOF
+if [ "$LEAKS" -eq 0 ]; then
+    ok "No test classes at PluginDetector fallback FQNs"
+fi
+
+# PluginManager.findEnabledPlugin was rejected in JetBrains Marketplace review; PluginDetector
+# must keep using PluginManagerCore.isLoaded/isDisabled. Previously asserted by a test that read
+# the source file off disk — a lint rule belongs here, not in the test suite.
+if grep -qE '^import com\.intellij\.ide\.plugins\.PluginManager$|findEnabledPlugin' \
+    src/main/kotlin/com/github/hechtcarmel/jetbrainsindexmcpplugin/util/PluginDetector.kt 2>/dev/null; then
+    fail "PluginDetector uses PluginManager.findEnabledPlugin — rejected in Marketplace review. Use PluginManagerCore.isLoaded/isDisabled."
 else
-    fail "Unit tests FAILED — fix before pushing"
+    ok "PluginDetector avoids the rejected PluginManager API"
+fi
+
+# ── 10. Tests ─────────────────────────────────────────────────────────────────
+hdr "Tests"
+
+# Exit code, not a grep for BUILD SUCCESSFUL: Gradle prints that when :test is UP-TO-DATE, so the
+# old check passed having executed nothing.
+#
+# --rerun-tasks, not cleanTest: with org.gradle.caching=true, cleanTest alone still resolves to
+# ":test FROM-CACHE" and the gate reports "All tests pass" in 3s having run nothing. Input-keyed
+# caching means a real code change does invalidate it, but the gate should not be blind to flakes
+# or print a claim it did not verify.
+echo "  Running ./gradlew test --rerun-tasks ..."
+if ./gradlew test --rerun-tasks; then
+    ok "All tests pass"
+else
+    fail "Tests FAILED — fix before pushing"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

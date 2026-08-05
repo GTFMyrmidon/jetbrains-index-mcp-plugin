@@ -260,6 +260,33 @@ synchronized with external file changes. The setting is disabled by default.
   ```kotlin
   override val requiresPsiSync: Boolean = false
   ```
+- For per-call opt-out (e.g. long-poll attach calls that touch no PSI), override
+  `needsPsiSync(arguments)` instead.
+
+### Long-Running Tools (Long-Poll Pattern)
+
+MCP clients enforce their own request timeout (60s by default in Claude Code / the MCP
+TypeScript SDK), and the stateless Streamable HTTP transport cannot send keep-alive progress
+notifications (kotlin-sdk 0.10.0 drops them in JSON response mode). **No tool call may ever
+block past ~45–55s** — a longer operation must long-poll (issue #277).
+
+Shared infrastructure (used by `ide_run_tests` and `ide_build_project`):
+- `tools/LongPoll.kt` — the per-call wait-budget policy: `waitSeconds` parameter, default 45,
+  ceiling 55.
+- `tools/project/LongPollRegistry.kt` — `LongPollOperation` + `LongPollRegistry`: watchdog that
+  enforces the operation deadline even when nobody polls, retention-based eviction (30 min),
+  exactly-once cleanup, and `awaitWithinBudget` (completed result beats a stale timeout verdict,
+  which beats waiting).
+
+A new long-running tool plugs in with three pieces:
+1. An operation class extending `LongPollOperation` — payload plus `deadlineMs` / `onDeadline`
+   (kill, or nothing) / `onCleanup` (disconnect, dispose) hooks.
+2. A project-level `@Service` registry extending `LongPollRegistry<YourOp>` (a few lines; see
+   `ActiveTestRunRegistry` / `ActiveBuildRegistry`).
+3. A poll parameter (`runId` / `buildId` / …): the start path registers the operation and both
+   paths call `awaitWithinBudget`, returning either the tool's normal result (then
+   `registry.remove(id)`) or an in-progress model (`status: "running"` + the id + an actionable
+   poll instruction). Override `needsPsiSync(arguments)` to skip PSI sync on attach calls.
 
 ### Code Style
 - Follow Kotlin coding conventions
@@ -369,7 +396,7 @@ Three tiers, selected by class-name suffix:
      are covered by set-equality instead), and **inputs only**.
    - `ResultShapeContractUnitTest` snapshots the other half of the client contract — the response
      side — into `src/test/resources/contract/result-shapes.txt`: the wire key set, JSON value
-     kind, nullability and optionality of all 61 serializable result models, every enum's wire
+     kind, nullability and optionality of all 63 serializable result models, every enum's wire
      values, and the `UsageTypes` literals. Result models use plain Kotlin property names as their
      wire keys, so renaming `UsageLocation.file` to `.path` is a source-compatible refactor that
      breaks every MCP client; this is what turns red.
@@ -477,11 +504,11 @@ Tools are organized by IDE availability.
 - `ide_reload_project` - Force-reload the project build model (Maven, Gradle, or both) after modifying build files. Equivalent to "Reload All Maven Projects" / "Reload Gradle Project" in the IDE. Async — returns immediately, resolution happens in background. (disabled by default)
 - `ide_import_modules` - Import external Maven project directories as modules into the current IntelliJ window for cross-project code intelligence and refactoring. Already imported module roots are skipped. Requires Maven plugin. (disabled by default)
 - `ide_open_workspace` - Scan a root directory for Maven projects and open them all in one IntelliJ window with full cross-project code intelligence, or provide an explicit list of Maven project paths via `modules`. `path` and `modules` are mutually exclusive; `modules` uses SHA-based caching. Creates a temporary aggregator POM with relative module paths. Requires Maven plugin. (disabled by default)
-- `ide_build_project` - Build project using IDE's build system (JPS, Gradle, Maven). Returns structured errors/warnings with file locations when available (null counts = no messages captured, not 0). Uses CompilationStatusListener for JPS builds and BuildProgressListener for Gradle/Maven builds. Supports workspace sub-project targeting via `project_path`. (disabled by default)
+- `ide_build_project` - Build project using IDE's build system (JPS, Gradle, Maven). Returns structured errors/warnings with file locations when available (null counts = no messages captured, not 0). Uses CompilationStatusListener for JPS builds and BuildProgressListener for Gradle/Maven builds. Supports workspace sub-project targeting via `project_path`. Each call blocks at most `waitSeconds` (default 45): a still-running call returns `{"status": "running", "buildId": ...}` and the agent polls with `buildId` while the build continues in the IDE. (disabled by default)
 - `ide_change_signature` - Change method signature (name, return type, visibility, parameters) with automatic caller updates using IntelliJ's Change Signature refactoring. Java only. (disabled by default)
 - `ide_create_file` - Create a new source file with content, immediately indexed by IntelliJ. Created through IntelliJ's VFS, instantly available for all IDE tools without needing `ide_sync_files`. Use instead of Write for `.java`, `.kt`, `.ts`, `.tsx`, `.py` files. File must not already exist. (disabled by default)
 - `ide_replace_text_in_file` - Find and replace text in a file using IntelliJ's Document API. Plain text or regex replacement through IntelliJ's document model, so changes are immediately visible to index, PSI, and all other IDE tools without needing `ide_sync_files`. (disabled by default)
-- `ide_run_tests` - Run tests via the IDE's run configuration infrastructure. `target` accepts an existing run config name (works for any language/framework) or a Java/Kotlin class/method FQN (`com.example.MyTest` / `com.example.MyTest#testFoo`). **Creating a config from an FQN is Java/Kotlin-only** — for Python/JS/TS/Go/PHP/Rust, pass an existing run-config name. Results are read directly from the IDE's test runner (any Service-Message-based framework: JUnit, TestNG, pytest, Jest, Go test, PHPUnit), returning structured pass/fail/error counts, exit code, and per-test results. By default the run does not activate (pop open) the Run tool window; pass `activateToolWindow: true` to open it. (disabled by default)
+- `ide_run_tests` - Run tests via the IDE's run configuration infrastructure. `target` accepts an existing run config name (works for any language/framework) or a Java/Kotlin class/method FQN (`com.example.MyTest` / `com.example.MyTest#testFoo`). **Creating a config from an FQN is Java/Kotlin-only** — for Python/JS/TS/Go/PHP/Rust, pass an existing run-config name. Results are read directly from the IDE's test runner (any Service-Message-based framework: JUnit, TestNG, pytest, Jest, Go test, PHPUnit), returning structured pass/fail/error counts, exit code, and per-test results. Each call blocks at most `waitSeconds` (default 45) so the MCP client's request timeout is never hit: a still-running call returns `{"status": "running", "runId": ...}` and the agent polls with `runId` while the run (bounded by `timeoutSeconds`, enforced by a registry watchdog) continues in the IDE. By default the run does not activate (pop open) the Run tool window; pass `activateToolWindow: true` to open it. (disabled by default)
 - `ide_refactor_rename` - Rename a symbol or file across the project with automatic related element renaming (getters/setters, overriding methods). Fully headless, works for ALL languages. Two modes: **symbol rename** (file + line + column + newName) and **file rename** (file + newName, omit line/column). File rename mode works for all file types including binary files (images, etc.) and is especially useful for Android resource files where it updates all XML references. Supports `relatedRenamingStrategy` parameter to control automatic related renames: `"all"` (default), `"none"`, `"accessors_and_tests"`, or `"ask"`.
 - `ide_move_file` - Move a file to a new directory using the IDE's refactoring engine. Automatically updates all references, imports, and package declarations across the project. Supports automatic directory creation and optional reference update toggle.
 - `ide_reformat_code` - Reformat code using project code style (.editorconfig, IDE settings). Supports optional import optimization and code rearrangement. (disabled by default)

@@ -7,18 +7,30 @@ description:
   Build the project using the IDE's build system (supports JPS, Gradle, Maven).
   Use after making code changes to check for compilation errors.
   
+  Long-running builds: each call blocks at most waitSeconds (default 45) so your MCP
+  client's request timeout is never hit. If the build is still executing when the wait budget
+  ends, the call returns {"status": "running", "buildId": "..."} while the build continues
+  inside the IDE — call this tool again with that buildId to keep waiting.
+  
   Returns: success status, error/warning counts, and structured build messages with file locations.
   Note: errors/warnings are null when no compiler messages were captured (e.g. no-op incremental build where nothing was recompiled, or build system without compiler message integration). null does NOT mean 0.
   
   When project_path points to a workspace sub-project, that module and its dependencies are built.
   
-  Parameters: project_path (optional), rebuild (optional, default false), includeRawOutput (optional, default false), timeoutSeconds (optional, must be positive).
+  Parameters: project_path (optional), rebuild (optional, default false), includeRawOutput (optional, default false),
+  timeoutSeconds (optional, max seconds for the whole build before it is reported timed out; no limit if omitted),
+  waitSeconds (optional, default 45, max 55), buildId (optional, polls a running build; excludes all other parameters).
   
-  Example: {} or {"rebuild": true} or {"includeRawOutput": true, "timeoutSeconds": 120}
+  Example: {} or {"rebuild": true} — then if a "running" status comes back: {"buildId": "<buildId from that response>"}
 schema:
   {
     "properties":
     {
+      "buildId":
+      {
+        "description": "buildId from a previous {\"status\": \"running\"} response: attaches to that build and keeps waiting instead of starting a new one.",
+        "type": "string"
+      },
       "includeRawOutput":
       {
         "description": "Include raw build output log in response. Default: false.",
@@ -36,7 +48,12 @@ schema:
       },
       "timeoutSeconds":
       {
-        "description": "Timeout in seconds. Must be a positive integer. No timeout if omitted.",
+        "description": "Maximum seconds the whole build may take before it is reported timed out (enforced across polls). Must be a positive integer. No limit if omitted. Ignored when buildId is given.",
+        "type": "integer"
+      },
+      "waitSeconds":
+      {
+        "description": "Maximum seconds this call may block before returning results or a \"running\" status. Default: 45, max: 55. Keep below your MCP client's request timeout.",
         "type": "integer"
       }
     },
@@ -2075,7 +2092,7 @@ schema:
 
 ## ide_run_tests
 description:
-  Run tests using the IDE's run configuration infrastructure. Waits for completion and returns results.
+  Run tests using the IDE's run configuration infrastructure and return structured results.
   
   The target can be:
   - An existing run configuration name (e.g. "All Tests") — works for ANY language/framework
@@ -2085,19 +2102,32 @@ description:
   Creating a run config from a class/method FQN is supported only for Java/Kotlin. For other
   languages (Python, JS/TS, Go, PHP, Rust), pass an existing run configuration name instead.
   
+  Long-running runs: each call blocks at most waitSeconds (default 45) so your MCP client's
+  request timeout is never hit. If the tests are still executing when the wait budget ends, the
+  call returns {"status": "running", "runId": "..."} while the run continues inside the IDE —
+  call this tool again with that runId (and no target) to keep waiting. The run itself is
+  bounded by timeoutSeconds: once it expires the process is killed and the next poll reports
+  timedOut: true.
+  
   Returns: success status, exit code, pass/fail/error counts, and per-test results.
   Results are read directly from the IDE's test runner, so they reflect this run (not stale report
   files) and work with any Service-Message-based framework (JUnit, TestNG, pytest, Jest, Go test, PHPUnit).
   
   Parameters:
   - project_path (optional): required when multiple projects are open.
-  - target (required): existing run config name, fully qualified class (com.example.MyTest), or class#method (com.example.MyTest#testFoo).
-  - timeoutSeconds (optional, default 120): maximum seconds to wait for the test run to complete.
+  - target: existing run config name, fully qualified class (com.example.MyTest), or class#method
+    (com.example.MyTest#testFoo). Exactly one of target / runId is required.
+  - runId: id from a previous {"status": "running"} response; attaches to that run and keeps waiting.
+  - timeoutSeconds (optional, default 120): maximum seconds the test RUN may take before its
+    process is killed. Applies to the whole run, across polls; ignored when runId is given.
+  - waitSeconds (optional, default 45, max 55): maximum seconds THIS CALL may block before
+    returning results or a "running" status. Keep it below your MCP client's request timeout.
   - activateToolWindow (optional, default false): open the Run tool window for this run. By default
     the run stays in the background without stealing focus; its content is still added to the Run
     tool window for manual inspection.
   
-  Example: {"target": "com.example.MyTest"} or {"target": "All Tests", "timeoutSeconds": 60}
+  Example: {"target": "com.example.MyTest", "timeoutSeconds": 7200}, then if a "running" status
+  comes back: {"runId": "<runId from that response>"}
 schema:
   {
     "properties":
@@ -2112,21 +2142,27 @@ schema:
         "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
         "type": "string"
       },
+      "runId":
+      {
+        "description": "runId from a previous {\"status\": \"running\"} response: attaches to that run and keeps waiting instead of starting a new one. Exactly one of target/runId is required.",
+        "type": "string"
+      },
       "target":
       {
-        "description": "Test target: existing run config name, fully qualified class (com.example.MyTest), or class#method (com.example.MyTest#testFoo).",
+        "description": "Test target: existing run config name, fully qualified class (com.example.MyTest), or class#method (com.example.MyTest#testFoo). Exactly one of target/runId is required.",
         "type": "string"
       },
       "timeoutSeconds":
       {
-        "description": "Timeout in seconds. Default: 120.",
+        "description": "Maximum seconds the whole test run may take before its process is killed (enforced across polls). Default: 120. Ignored when runId is given.",
+        "type": "integer"
+      },
+      "waitSeconds":
+      {
+        "description": "Maximum seconds this call may block before returning results or a \"running\" status. Default: 45, max: 55. Keep below your MCP client's request timeout.",
         "type": "integer"
       }
     },
-    "required":
-    [
-      "target"
-    ],
     "type": "object"
   }
 

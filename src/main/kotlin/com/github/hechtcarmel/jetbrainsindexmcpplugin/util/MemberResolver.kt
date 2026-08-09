@@ -31,6 +31,9 @@ object MemberResolverFactory {
         return when (psiFile.language.id) {
             "JAVA" -> if (PluginDetectors.java.isAvailable) JavaMemberResolver(project) else null
             "kotlin" -> if (PluginDetectors.kotlin.isAvailable) KotlinMemberResolver(project) else null
+            "Python" -> if (PluginDetectors.python.isAvailable) PythonMemberResolver(project) else null
+            "JavaScript", "TypeScript", "TypeScript JSX", "JSX Harmony", "ECMAScript 6" ->
+                if (PluginDetectors.javaScript.isAvailable) JavaScriptMemberResolver(project) else null
             else -> null
         }
     }

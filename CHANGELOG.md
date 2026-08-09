@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+- **`ide_edit_member`, `ide_insert_member`, `ide_replace_member`** now support Python and JavaScript/TypeScript in addition to Java and Kotlin.
+- **`ide_change_signature`** now supports Python and JavaScript/TypeScript in addition to Java.
+
 ## [5.5.0] - 2026-08-09
 
 ### Added

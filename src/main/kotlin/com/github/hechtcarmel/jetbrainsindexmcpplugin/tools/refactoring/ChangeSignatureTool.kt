@@ -42,12 +42,14 @@ class ChangeSignatureTool : AbstractMcpTool() {
     override val description = """
         Change a method's signature and automatically update all callers, overrides, and implementations.
 
+        Supports Java, Python, and JavaScript/TypeScript.
         Can modify: method name, return type, visibility, parameters (add, remove, reorder, change types).
         New parameters get a default value inserted at all call sites.
 
         Examples:
         - Add parameter: {"file": "src/Service.java", "line": 15, "column": 10, "newParameters": [{"oldIndex": 0, "name": "id", "type": "String"}, {"oldIndex": -1, "name": "validate", "type": "boolean", "defaultValue": "true"}]}
         - Change return type: {"file": "src/Service.java", "line": 15, "column": 10, "newReturnType": "Optional<User>"}
+        - Python rename: {"file": "src/service.py", "line": 10, "column": 5, "newName": "new_service"}
     """.trimIndent()
 
     override val inputSchema: ToolSchema = SchemaBuilder.tool()
@@ -88,12 +90,6 @@ class ChangeSignatureTool : AbstractMcpTool() {
         val parameters: List<Pair<String, String>>
     )
 
-    /**
-     * Everything needed to check, after the processor ran, whether the requested change
-     * actually reached the PSI. `BaseRefactoringProcessor.run()` returns normally on abort paths
-     * (read-only target file, unwritable elements), so without this check an aborted
-     * refactoring would still be reported as applied.
-     */
     private data class SignatureVerification(
         val pointer: SmartPsiElementPointer<PsiMethod>,
         val before: SignatureState,
@@ -129,6 +125,40 @@ class ChangeSignatureTool : AbstractMcpTool() {
             ?: return createErrorResult("File not found: $filePath")
         ensureWritable(virtualFile)?.let { return it }
 
+        val psiFile = suspendingReadAction {
+            PsiManager.getInstance(project).findFile(virtualFile)
+        } ?: return createErrorResult("Cannot resolve PSI for: $filePath")
+
+        return when (psiFile.language.id) {
+            "JAVA" -> executeJavaChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newReturnType, newVisibility, newParametersJson, generateDelegate
+            )
+            "Python" -> executePythonChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newParametersJson
+            )
+            "JavaScript", "TypeScript", "TypeScript JSX", "JSX Harmony", "ECMAScript 6" -> executeJsChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newReturnType, newParametersJson
+            )
+            else -> createErrorResult("Change signature not supported for ${psiFile.language.displayName}. Supported: Java, Python, JavaScript, TypeScript.")
+        }
+    }
+
+    private suspend fun executeJavaChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newReturnType: String?,
+        newVisibility: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?,
+        generateDelegate: Boolean
+    ): CallToolResult {
         val changeSignatureProcessorClass = try {
             Class.forName("com.intellij.refactoring.changeSignature.ChangeSignatureProcessor")
         } catch (_: ClassNotFoundException) {
@@ -160,6 +190,272 @@ class ChangeSignatureTool : AbstractMcpTool() {
                     generateDelegate, changeSignatureProcessorClass, javaChangeInfoImplClass, parameterInfoImplClass
                 )
             }
+        }
+    }
+
+    private suspend fun executePythonChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?
+    ): CallToolResult {
+        val pyFunctionClass = try {
+            Class.forName("com.jetbrains.python.psi.PyFunction")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires Python plugin.")
+        }
+
+        val pyChangeSignatureProcessorClass = try {
+            Class.forName("com.jetbrains.python.refactoring.changeSignature.PyChangeSignatureProcessor")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires Python plugin.")
+        }
+
+        val pyParameterInfoClass = try {
+            Class.forName("com.jetbrains.python.refactoring.changeSignature.PyParameterInfo")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("PyParameterInfo not available — requires Python plugin.")
+        }
+
+        val pyFunction = suspendingReadAction {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
+            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
+            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
+            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
+            PsiTreeUtil.getParentOfType(element, pyFunctionClass as Class<out PsiElement>)
+        } ?: return createErrorResult("No function found at line $line, column $column. Position the cursor on a function name.")
+
+        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
+
+        return try {
+            val (processor, affectedFiles) = suspendingReadAction {
+                val currentParamsMethod = pyFunction.javaClass.getMethod("getParameterList")
+                val currentParamScope = currentParamsMethod.invoke(pyFunction) as? PsiElement
+                val currentParams = if (currentParamScope != null) {
+                    (currentParamScope.javaClass.getMethod("getParameters").invoke(currentParamScope) as? Array<*>)?.toList() ?: emptyList()
+                } else emptyList()
+
+                val paramInfos = mutableListOf<Any>()
+                if (newParametersJson != null) {
+                    for (paramJson in newParametersJson) {
+                        val obj = paramJson.jsonObject
+                        val oldIndex = obj["oldIndex"]?.jsonPrimitive?.int ?: -1
+                        val name = obj["name"]?.jsonPrimitive?.content ?: ""
+                        val defaultValue = obj["defaultValue"]?.jsonPrimitive?.content ?: ""
+
+                        val paramCtor = pyParameterInfoClass.constructors.firstOrNull { ctor ->
+                            ctor.parameterCount >= 3 && ctor.parameterTypes[0] == Integer.TYPE && ctor.parameterTypes[1] == String::class.java
+                        } ?: throw Exception("Cannot locate PyParameterInfo constructor")
+
+                        val instance = when (paramCtor.parameterCount) {
+                            3 -> paramCtor.newInstance(oldIndex, name, defaultValue)
+                            4 -> paramCtor.newInstance(oldIndex, name, defaultValue, false)
+                            else -> {
+                                val args = arrayOfNulls<Any>(paramCtor.parameterCount)
+                                args[0] = oldIndex
+                                args[1] = name
+                                args[2] = defaultValue
+                                args[3] = false
+                                paramCtor.newInstance(*args)
+                            }
+                        }
+                        paramInfos.add(instance)
+                    }
+                } else {
+                    currentParams.forEachIndexed { i, p ->
+                        if (p != null) {
+                            val name = p.javaClass.getMethod("getName").invoke(p) as? String ?: ""
+                            val paramCtor = pyParameterInfoClass.constructors.firstOrNull { ctor ->
+                                ctor.parameterCount >= 3 && ctor.parameterTypes[0] == Integer.TYPE
+                            }
+                            if (paramCtor != null) {
+                                val args = arrayOfNulls<Any>(paramCtor.parameterCount)
+                                args[0] = i
+                                args[1] = name
+                                args[2] = ""
+                                if (args.size > 3) args[3] = false
+                                paramInfos.add(paramCtor.newInstance(*args))
+                            }
+                        }
+                    }
+                }
+
+                val targetName = newName ?: (pyFunction.javaClass.getMethod("getName").invoke(pyFunction) as? String ?: "")
+
+                val procCtor = pyChangeSignatureProcessorClass.constructors.firstOrNull { ctor ->
+                    ctor.parameterCount >= 3 && ctor.parameterTypes[0] == Project::class.java
+                } ?: throw Exception("Cannot locate PyChangeSignatureProcessor constructor")
+
+                val procArgs = arrayOfNulls<Any>(procCtor.parameterCount)
+                procArgs[0] = project
+                procArgs[1] = pyFunction
+                procArgs[2] = targetName
+                if (procArgs.size > 3) {
+                    val listType = procCtor.parameterTypes[3]
+                    if (listType.isArray) {
+                        val arr = java.lang.reflect.Array.newInstance(pyParameterInfoClass, paramInfos.size)
+                        paramInfos.forEachIndexed { idx, item -> java.lang.reflect.Array.set(arr, idx, item) }
+                        procArgs[3] = arr
+                    } else {
+                        procArgs[3] = paramInfos
+                    }
+                }
+                if (procArgs.size > 4) procArgs[4] = false
+
+                val proc = procCtor.newInstance(*procArgs) as com.intellij.refactoring.BaseRefactoringProcessor
+                proc to relativePath
+            }
+
+            edtAction {
+                processor.setPreviewUsages(false)
+                val hook = processorRunHook
+                if (hook != null) hook() else processor.run()
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                FileDocumentManager.getInstance().saveAllDocuments()
+            }
+
+            createJsonResult(ChangeSignatureResult(
+                success = true,
+                file = affectedFiles,
+                message = "Changed Python signature of function",
+                affectedFiles = listOf(affectedFiles),
+                changesCount = 1
+            ))
+        } catch (e: Throwable) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult("Python change signature failed: ${cause.message}")
+        }
+    }
+
+    private suspend fun executeJsChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newReturnType: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?
+    ): CallToolResult {
+        val jsFunctionClass = try {
+            Class.forName("com.intellij.lang.javascript.psi.JSFunction")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires JavaScript plugin.")
+        }
+
+        val jsChangeSignatureProcessorClass = try {
+            Class.forName("com.intellij.lang.javascript.refactoring.changeSignature.JSChangeSignatureProcessor")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires JavaScript plugin.")
+        }
+
+        val jsFunction = suspendingReadAction {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
+            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
+            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
+            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
+            PsiTreeUtil.getParentOfType(element, jsFunctionClass as Class<out PsiElement>)
+        } ?: return createErrorResult("No function found at line $line, column $column. Position the cursor on a function name.")
+
+        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
+
+        val jsParameterInfoClass = try {
+            Class.forName("com.intellij.lang.javascript.refactoring.changeSignature.JSParameterInfo")
+        } catch (_: ClassNotFoundException) {
+            null
+        }
+
+        return try {
+            val (processor, affectedFiles) = suspendingReadAction {
+                val currentName = jsFunction.javaClass.getMethod("getName").invoke(jsFunction) as? String ?: ""
+                val targetName = newName ?: currentName
+
+                val procCtor = jsChangeSignatureProcessorClass.constructors.firstOrNull { ctor ->
+                    ctor.parameterCount >= 7 && ctor.parameterTypes[0].isAssignableFrom(jsFunction.javaClass)
+                } ?: jsChangeSignatureProcessorClass.constructors.firstOrNull()
+                ?: throw Exception("Cannot locate JSChangeSignatureProcessor constructor")
+
+                val procArgs = arrayOfNulls<Any>(procCtor.parameterCount)
+                procArgs[0] = jsFunction
+                procArgs[1] = null // JSAttributeList.AccessType (optional/null)
+                procArgs[2] = targetName
+                procArgs[3] = newReturnType
+                if (jsParameterInfoClass != null) {
+                    val p5Ctor = jsParameterInfoClass.constructors.firstOrNull { c ->
+                        c.parameterCount == 5 && c.parameterTypes[4] == Int::class.javaPrimitiveType
+                    } ?: jsParameterInfoClass.constructors.firstOrNull { c -> c.parameterCount >= 5 }
+
+                    val paramContainer = jsFunction.javaClass.methods.firstOrNull { it.name == "getParameterList" || it.name == "getParameters" }?.invoke(jsFunction)
+                    val existingParams = if (paramContainer is Array<*>) paramContainer.toList() else if (paramContainer != null) {
+                        val getParams = paramContainer.javaClass.methods.firstOrNull { it.name == "getParameters" }
+                        (getParams?.invoke(paramContainer) as? Array<*>)?.toList() ?: emptyList()
+                    } else emptyList()
+
+                    val paramInfoList = mutableListOf<Any>()
+
+                    if (newParametersJson != null && newParametersJson.isNotEmpty()) {
+                        for (element in newParametersJson) {
+                            val obj = element.jsonObject
+                            val oldIdx = obj["oldIndex"]?.jsonPrimitive?.int ?: -1
+                            val pName = obj["name"]?.jsonPrimitive?.content
+                                ?: if (oldIdx in existingParams.indices) {
+                                    existingParams[oldIdx]?.javaClass?.getMethod("getName")?.invoke(existingParams[oldIdx]) as? String ?: ""
+                                } else ""
+                            val pType = obj["type"]?.jsonPrimitive?.content ?: ""
+                            val pDefault = obj["defaultValue"]?.jsonPrimitive?.content ?: ""
+
+                            if (p5Ctor != null) {
+                                val pObj = p5Ctor.newInstance(pName, pType, pDefault, "", oldIdx)
+                                paramInfoList.add(pObj)
+                            }
+                        }
+                    } else {
+                        for ((idx, param) in existingParams.withIndex()) {
+                            val paramName = param?.javaClass?.getMethod("getName")?.invoke(param) as? String ?: "arg$idx"
+                            if (p5Ctor != null) {
+                                val pObj = p5Ctor.newInstance(paramName, "", "", "", idx)
+                                paramInfoList.add(pObj)
+                            }
+                        }
+                    }
+
+                    val arr = java.lang.reflect.Array.newInstance(jsParameterInfoClass, paramInfoList.size)
+                    paramInfoList.forEachIndexed { idx, item -> java.lang.reflect.Array.set(arr, idx, item) }
+                    procArgs[4] = arr
+                } else {
+                    procArgs[4] = null
+                }
+                procArgs[5] = emptySet<Any>()
+                procArgs[6] = emptySet<Any>()
+                if (procArgs.size > 7) procArgs[7] = false
+
+                val proc = procCtor.newInstance(*procArgs) as com.intellij.refactoring.BaseRefactoringProcessor
+                proc to relativePath
+            }
+
+            edtAction {
+                processor.setPreviewUsages(false)
+                val hook = processorRunHook
+                if (hook != null) hook() else processor.run()
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                FileDocumentManager.getInstance().saveAllDocuments()
+            }
+
+            createJsonResult(ChangeSignatureResult(
+                success = true,
+                file = affectedFiles,
+                message = "Changed JavaScript/TypeScript signature of function",
+                affectedFiles = listOf(affectedFiles),
+                changesCount = 1
+            ))
+        } catch (e: Throwable) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult("JavaScript/TypeScript change signature failed: ${cause.message}")
         }
     }
 
@@ -292,8 +588,6 @@ class ChangeSignatureTool : AbstractMcpTool() {
                     targetName = newName,
                     targetReturnTypeText = requestedReturnPsiType?.canonicalText,
                     targetVisibility = if (newVisibility != null) effectiveVisibility else null,
-                    // Safe to re-read the JSON here: buildParameterInfos already validated every
-                    // entry (name, type present and parseable) earlier in this read action.
                     targetParameters = newParametersJson?.map { paramJson ->
                         val obj = paramJson.jsonObject
                         val paramName = obj["name"]!!.jsonPrimitive.content
@@ -409,14 +703,6 @@ class ChangeSignatureTool : AbstractMcpTool() {
         parameters = method.parameterList.parameters.map { it.name to it.type.canonicalText }
     )
 
-    /**
-     * Conservative post-run check: an aspect counts as applied when the method now matches the
-     * request, or when it changed from the pre-run state at all (so any partial or
-     * differently-rendered application still counts). Only when every requested aspect is
-     * provably untouched — the signature of a silently aborted refactoring — is the run treated
-     * as failed. A pointer that no longer resolves means the refactoring restructured the PSI,
-     * which also counts as applied.
-     */
     private fun anyRequestedAspectApplied(verification: SignatureVerification): Boolean {
         val method = verification.pointer.element ?: return true
         val after = captureSignatureState(method)

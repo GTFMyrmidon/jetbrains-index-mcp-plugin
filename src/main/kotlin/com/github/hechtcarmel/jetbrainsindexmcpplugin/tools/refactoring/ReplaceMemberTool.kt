@@ -27,12 +27,14 @@ class ReplaceMemberTool : AbstractMcpTool() {
         Examples:
         - {"file": "src/Main.java", "class": "Main", "member": "getName", "content": "return this.name;"}
         - {"file": "src/Config.kt", "member": "defaultPort", "content": "8080"}
+        - {"file": "src/calc.py", "class": "Calculator", "member": "add", "content": "return a + b + 1"}
+        - {"file": "src/calc.js", "class": "Calculator", "member": "add", "content": "return a + b + 1;"}
     """.trimIndent()
 
     override val inputSchema = SchemaBuilder.tool()
         .projectPath()
         .file(description = "Path to file relative to project root. REQUIRED.")
-        .stringProperty(ParamNames.CLASS, "Class/interface name containing the member. Optional for top-level members (Kotlin).")
+        .stringProperty(ParamNames.CLASS, "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS).")
         .stringProperty(ParamNames.MEMBER, "Name of the method, function, field, or property to replace the body/initializer of.", required = true)
         .intProperty(ParamNames.PARAMETER_COUNT, "Number of parameters (for disambiguating overloaded methods).")
         .intProperty(ParamNames.LINE, "1-based line number of the member (for disambiguation when multiple members share the same name).")
@@ -82,7 +84,7 @@ class ReplaceMemberTool : AbstractMcpTool() {
             ?: return Result.failure(Exception("File not found: $filePath"))
 
         val resolver = MemberEditingUtils.getResolver(psiFile, project)
-            ?: return Result.failure(Exception("Member editing not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin."))
+            ?: return Result.failure(Exception("Member editing not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin, Python, JavaScript, TypeScript."))
 
         val scope = resolver.findClass(psiFile, className)
             ?: return Result.failure(

@@ -654,4 +654,329 @@ class MemberEditingToolsBehaviorTest : McpPlatformTestCase() {
         val payload = parseResult(result)
         assertTrue(payload.success)
     }
+
+    // ── Python tests ──
+
+    fun testPythonReplaceMethodBody() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/calc.py", """
+            class Calculator:
+                def add(self, a, b):
+                    return a + b
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/calc.py")
+            put("class", "Calculator")
+            put("member", "add")
+            put("content", "return a + b + 1")
+        })
+
+        assertToolSucceeded("Python replace body should succeed", result)
+        val content = readProjectFile("src/calc.py")
+        assertTrue("Should contain new body", content.contains("a + b + 1"))
+    }
+
+    fun testPythonReplaceTopLevelFunctionBody() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/util.py", """
+            def greet(name):
+                return f"Hello {name}"
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/util.py")
+            put("member", "greet")
+            put("content", "return f\"Hi {name}\"")
+        })
+
+        assertToolSucceeded("Python top-level function replace body should succeed", result)
+        val content = readProjectFile("src/util.py")
+        assertTrue("Should contain new body", content.contains("Hi {name}"))
+    }
+
+    fun testPythonReplaceFieldInitializer() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/config.py", """
+            TIMEOUT = 30
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/config.py")
+            put("member", "TIMEOUT")
+            put("content", "60")
+        })
+
+        assertToolSucceeded("Python replace field initializer should succeed", result)
+        val content = readProjectFile("src/config.py")
+        assertTrue("Field should have new value", content.contains("60"))
+    }
+
+    fun testPythonEditMemberReplacesEntireDeclaration() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/service.py", """
+            class Service:
+                def get_name(self):
+                    return "old"
+        """.trimIndent())
+
+        val result = EditMemberTool().execute(project, buildJsonObject {
+            put("file", "src/service.py")
+            put("class", "Service")
+            put("member", "get_name")
+            put("content", "def get_full_name(self):\n        return \"new\"")
+        })
+
+        assertToolSucceeded("Python edit member should succeed", result)
+        val content = readProjectFile("src/service.py")
+        assertTrue("Should contain get_full_name", content.contains("get_full_name"))
+        assertFalse("Old function should be gone", content.contains("get_name"))
+    }
+
+    fun testPythonInsertMemberAtEnd() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/base.py", """
+            class Base:
+                def existing(self):
+                    pass
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/base.py")
+            put("class", "Base")
+            put("content", "def new_method(self):\n        pass")
+        })
+
+        assertToolSucceeded("Python insert member should succeed", result)
+        val content = readProjectFile("src/base.py")
+        assertTrue("Should contain new method", content.contains("new_method"))
+    }
+
+    fun testPythonInsertTopLevelFunction() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/top.py", """
+            def first():
+                pass
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/top.py")
+            put("content", "def second():\n    pass")
+        })
+
+        assertToolSucceeded("Python insert top level function should succeed", result)
+        val content = readProjectFile("src/top.py")
+        assertTrue("Should contain second", content.contains("second"))
+    }
+
+    fun testPythonMemberNotFound() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/empty.py", """
+            def work():
+                pass
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/empty.py")
+            put("member", "nonExistent")
+            put("content", "pass")
+        })
+
+        val payload = parseErrorResult(result)
+        assertEquals("member_not_found", payload.error)
+    }
+
+    // ── JS/TS tests ──
+
+    fun testJsReplaceMethodBody() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/calc.js", """
+            class Calculator {
+                add(a, b) {
+                    return a + b;
+                }
+            }
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/calc.js")
+            put("class", "Calculator")
+            put("member", "add")
+            put("content", "return a + b + 1;")
+        })
+
+        assertToolSucceeded("JS replace body should succeed", result)
+        val content = readProjectFile("src/calc.js")
+        assertTrue("Should contain new body", content.contains("a + b + 1"))
+    }
+
+    fun testJsReplaceArrowFunctionBody() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/arrow.js", """
+            const add = (a, b) => {
+                return a + b;
+            };
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/arrow.js")
+            put("member", "add")
+            put("content", "return a + b + 2;")
+        })
+
+        assertToolSucceeded("JS arrow fn replace body should succeed", result)
+        val content = readProjectFile("src/arrow.js")
+        assertTrue("Should contain new body", content.contains("a + b + 2"))
+    }
+
+    fun testJsReplaceFieldInitializer() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/config.js", """
+            const TIMEOUT = 30;
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/config.js")
+            put("member", "TIMEOUT")
+            put("content", "60")
+        })
+
+        assertToolSucceeded("JS replace field initializer should succeed", result)
+        val content = readProjectFile("src/config.js")
+        assertTrue("Should contain new value", content.contains("60"))
+    }
+
+    fun testJsEditMemberReplacesEntireDeclaration() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/service.js", """
+            class Service {
+                getName() {
+                    return "old";
+                }
+            }
+        """.trimIndent())
+
+        val result = EditMemberTool().execute(project, buildJsonObject {
+            put("file", "src/service.js")
+            put("class", "Service")
+            put("member", "getName")
+            put("content", "getFullName() {\n        return \"new\";\n    }")
+        })
+
+        assertToolSucceeded("JS edit member should succeed", result)
+        val content = readProjectFile("src/service.js")
+        assertTrue("Should contain getFullName", content.contains("getFullName"))
+        assertFalse("Old method should be gone", content.contains("getName"))
+    }
+
+    fun testJsInsertMemberAtEnd() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/base.js", """
+            class Base {
+                existing() {}
+            }
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/base.js")
+            put("class", "Base")
+            put("content", "newMethod() {}")
+        })
+
+        assertToolSucceeded("JS insert member should succeed", result)
+        val content = readProjectFile("src/base.js")
+        assertTrue("Should contain newMethod", content.contains("newMethod"))
+    }
+
+    fun testJsInsertTopLevelFunction() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/top.js", """
+            function first() {}
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/top.js")
+            put("content", "function second() {}")
+        })
+
+        assertToolSucceeded("JS insert top level function should succeed", result)
+        val content = readProjectFile("src/top.js")
+        assertTrue("Should contain second", content.contains("second"))
+    }
+
+    fun testTsReplaceMethodBody() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/calc.ts", """
+            class Calculator {
+                add(a: number, b: number): number {
+                    return a + b;
+                }
+            }
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/calc.ts")
+            put("class", "Calculator")
+            put("member", "add")
+            put("content", "return a + b + 1;")
+        })
+
+        assertToolSucceeded("TS replace method body should succeed", result)
+        val content = readProjectFile("src/calc.ts")
+        assertTrue("Should contain new body", content.contains("a + b + 1"))
+    }
+
+    fun testTsReplaceMethodWithGenerics() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/gen.ts", """
+            class Container<T> {
+                getValue<U>(x: U): U {
+                    return x;
+                }
+            }
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/gen.ts")
+            put("class", "Container")
+            put("member", "getValue")
+            put("content", "console.log(x); return x;")
+        })
+
+        assertToolSucceeded("TS generic method replace body should succeed", result)
+        val content = readProjectFile("src/gen.ts")
+        assertTrue("Should contain console.log", content.contains("console.log"))
+    }
+
+    fun testJsMemberNotFound() = runBlocking {
+        Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+
+        writeProjectFile("src/empty.js", """
+            function work() {}
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/empty.js")
+            put("member", "nonExistent")
+            put("content", "return;")
+        })
+
+        val payload = parseErrorResult(result)
+        assertEquals("member_not_found", payload.error)
+    }
 }

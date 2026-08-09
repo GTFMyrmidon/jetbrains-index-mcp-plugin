@@ -31,12 +31,14 @@ class EditMemberTool : AbstractMcpTool() {
         - {"file": "src/Main.java", "class": "Main", "member": "process", "content": "public void process(String input, boolean validate) {\n    if (validate) check(input);\n}"}
         - {"file": "src/Config.kt", "class": "Config", "member": "timeout", "content": "val timeout: Duration = Duration.ofSeconds(30)"}
         - {"file": "src/Service.java", "member": "Service", "content": "public class Service<T> implements Serializable { ... }"}
+        - {"file": "src/service.py", "class": "Service", "member": "get_name", "content": "def get_full_name(self):\n    return self.name"}
+        - {"file": "src/calc.js", "class": "Calculator", "member": "add", "content": "add(a, b) {\n    return a + b + 1;\n}"}
     """.trimIndent()
 
     override val inputSchema = SchemaBuilder.tool()
         .projectPath()
         .file(description = "Path to file relative to project root. REQUIRED.")
-        .stringProperty(ParamNames.CLASS, "Class/interface name containing the member. Optional for top-level members (Kotlin).")
+        .stringProperty(ParamNames.CLASS, "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS).")
         .stringProperty(ParamNames.MEMBER, "Name of the method, function, field, or property to replace entirely.", required = true)
         .intProperty(ParamNames.PARAMETER_COUNT, "Number of parameters (for disambiguating overloaded methods).")
         .intProperty(ParamNames.LINE, "1-based line number of the member (for disambiguation when multiple members share the same name).")
@@ -89,7 +91,7 @@ class EditMemberTool : AbstractMcpTool() {
             ?: return Result.failure(Exception("File not found: $filePath"))
 
         val resolver = MemberEditingUtils.getResolver(psiFile, project)
-            ?: return Result.failure(Exception("Member editing not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin."))
+            ?: return Result.failure(Exception("Member editing not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin, Python, JavaScript, TypeScript."))
 
         val scope = resolver.findClass(psiFile, className)
             ?: return Result.failure(

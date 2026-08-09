@@ -165,12 +165,14 @@ schema:
 description:
   Change a method's signature and automatically update all callers, overrides, and implementations.
   
+  Supports Java, Python, and JavaScript/TypeScript.
   Can modify: method name, return type, visibility, parameters (add, remove, reorder, change types).
   New parameters get a default value inserted at all call sites.
   
   Examples:
   - Add parameter: {"file": "src/Service.java", "line": 15, "column": 10, "newParameters": [{"oldIndex": 0, "name": "id", "type": "String"}, {"oldIndex": -1, "name": "validate", "type": "boolean", "defaultValue": "true"}]}
   - Change return type: {"file": "src/Service.java", "line": 15, "column": 10, "newReturnType": "Optional<User>"}
+  - Python rename: {"file": "src/service.py", "line": 10, "column": 5, "newName": "new_service"}
 schema:
   {
     "properties":
@@ -472,13 +474,15 @@ description:
   - {"file": "src/Main.java", "class": "Main", "member": "process", "content": "public void process(String input, boolean validate) {\n    if (validate) check(input);\n}"}
   - {"file": "src/Config.kt", "class": "Config", "member": "timeout", "content": "val timeout: Duration = Duration.ofSeconds(30)"}
   - {"file": "src/Service.java", "member": "Service", "content": "public class Service<T> implements Serializable { ... }"}
+  - {"file": "src/service.py", "class": "Service", "member": "get_name", "content": "def get_full_name(self):\n    return self.name"}
+  - {"file": "src/calc.js", "class": "Calculator", "member": "add", "content": "add(a, b) {\n    return a + b + 1;\n}"}
 schema:
   {
     "properties":
     {
       "class":
       {
-        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin).",
+        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS).",
         "type": "string"
       },
       "content":
@@ -1196,6 +1200,8 @@ description:
   - {"file": "src/Main.java", "class": "Main", "content": "public String getFullName() {\n    return firstName + \" \" + lastName;\n}", "position": "after", "anchor": "getLastName"}
   - {"file": "src/Main.java", "class": "Main", "content": "private int age;", "position": "before", "anchor": "getName"}
   - {"file": "src/utils.kt", "content": "fun helper(): String = \"help\""}
+  - {"file": "src/base.py", "class": "Base", "content": "def new_method(self):\n    pass"}
+  - {"file": "src/base.js", "class": "Base", "content": "newMethod() {}"}
 schema:
   {
     "properties":
@@ -1217,7 +1223,7 @@ schema:
       },
       "class":
       {
-        "description": "Class/interface name to insert into. Optional for top-level members (Kotlin).",
+        "description": "Class/interface name to insert into. Optional for top-level members (Kotlin, Python, JS/TS).",
         "type": "string"
       },
       "content":
@@ -2036,13 +2042,15 @@ description:
   Examples:
   - {"file": "src/Main.java", "class": "Main", "member": "getName", "content": "return this.name;"}
   - {"file": "src/Config.kt", "member": "defaultPort", "content": "8080"}
+  - {"file": "src/calc.py", "class": "Calculator", "member": "add", "content": "return a + b + 1"}
+  - {"file": "src/calc.js", "class": "Calculator", "member": "add", "content": "return a + b + 1;"}
 schema:
   {
     "properties":
     {
       "class":
       {
-        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin).",
+        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS).",
         "type": "string"
       },
       "content":

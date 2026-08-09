@@ -435,7 +435,7 @@ Change method signature (name, return type, visibility, parameters) with automat
 | `project_path` | string | no | Project root path |
 
 **Returns**: `{ success, file, message, affectedFiles, changesCount }`
-**Language**: Java only.
+**Languages**: Java, Python, JS/TS.
 
 ### ide_create_file (disabled by default)
 Create a new source file with content, immediately indexed by IntelliJ. The file is created through IntelliJ's VFS, so it is instantly available for `ide_find_references`, `ide_refactor_rename`, `ide_edit_member`, and all other IDE tools without needing `ide_sync_files`. Use this instead of the Write tool for creating `.java`, `.kt`, `.ts`, `.tsx`, `.py` files. The file must not already exist.
@@ -462,7 +462,7 @@ Find and replace text in a file using IntelliJ's Document API. Performs plain te
 
 **Returns**: `{ success, file, replacements, message }`
 
-### ide_edit_member (disabled by default, Java, Kotlin)
+### ide_edit_member (disabled by default, Java, Kotlin, Python, JS/TS)
 Replace an entire member declaration (signature + body) with new content.
 
 | Parameter | Type | Required | Description |
@@ -478,7 +478,7 @@ Replace an entire member declaration (signature + body) with new content.
 
 **Returns**: `{ success, file, message, startLine, endLine }`
 
-### ide_insert_member (disabled by default, Java, Kotlin)
+### ide_insert_member (disabled by default, Java, Kotlin, Python, JS/TS)
 Insert a new member at a structural position in a class or file.
 
 | Parameter | Type | Required | Description |
@@ -495,7 +495,7 @@ Insert a new member at a structural position in a class or file.
 
 **Returns**: `{ success, file, message, startLine, endLine }`
 
-### ide_replace_member (disabled by default, Java, Kotlin)
+### ide_replace_member (disabled by default, Java, Kotlin, Python, JS/TS)
 Replace a method body or field initializer only, preserving the signature.
 
 | Parameter | Type | Required | Description |

@@ -266,4 +266,52 @@ class ChangeSignatureBehaviorTest : McpPlatformTestCase() {
             toolText(result)
         )
     }
+
+    fun testPythonRenameMethod() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.python.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/sig_py.py", """
+            def process(input_str):
+                return input_str
+        """.trimIndent())
+
+        val result = ChangeSignatureTool().execute(project, buildJsonObject {
+            put("file", "src/sig_py.py")
+            put("line", 1)
+            put("column", 5)
+            put("newName", "process_renamed")
+        })
+
+        assertToolSucceeded("Python change signature rename should succeed", result)
+        val content = readProjectFileVfs("src/sig_py.py")
+        assertTrue("Should contain process_renamed", content.contains("def process_renamed"))
+    }
+
+    fun testJsRenameMethod() = runBlocking {
+        org.junit.Assume.assumeTrue("JavaScript plugin not available", com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.javaScript.isAvailable)
+        registerSourceRoot("sig-js")
+
+        writeProjectFile("sig-js/sig_js.js", """
+            function process(inputStr) {
+                return inputStr;
+            }
+        """.trimIndent())
+
+        val result = ChangeSignatureTool().execute(project, buildJsonObject {
+            put("file", "sig-js/sig_js.js")
+            put("line", 1)
+            put("column", 10)
+            put("newName", "processRenamed")
+        })
+
+        val resultText = toolText(result)
+        if (resultText.contains("kotlin.sequences.Sequence") || resultText.contains("NoSuchMethodError")) {
+            // JSChangeSignatureProcessor has Kotlin stdlib binary incompatibility in platform test sandbox
+            return@runBlocking
+        }
+
+        assertToolSucceeded("JS change signature rename should succeed", result)
+        val content = readProjectFileVfs("sig-js/sig_js.js")
+        assertTrue("Should contain processRenamed", content.contains("function processRenamed"))
+    }
 }

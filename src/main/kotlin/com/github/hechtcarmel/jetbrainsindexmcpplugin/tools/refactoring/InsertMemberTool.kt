@@ -27,12 +27,14 @@ class InsertMemberTool : AbstractMcpTool() {
         - {"file": "src/Main.java", "class": "Main", "content": "public String getFullName() {\n    return firstName + \" \" + lastName;\n}", "position": "after", "anchor": "getLastName"}
         - {"file": "src/Main.java", "class": "Main", "content": "private int age;", "position": "before", "anchor": "getName"}
         - {"file": "src/utils.kt", "content": "fun helper(): String = \"help\""}
+        - {"file": "src/base.py", "class": "Base", "content": "def new_method(self):\n    pass"}
+        - {"file": "src/base.js", "class": "Base", "content": "newMethod() {}"}
     """.trimIndent()
 
     override val inputSchema = SchemaBuilder.tool()
         .projectPath()
         .file(description = "Path to file relative to project root. REQUIRED.")
-        .stringProperty(ParamNames.CLASS, "Class/interface name to insert into. Optional for top-level members (Kotlin).")
+        .stringProperty(ParamNames.CLASS, "Class/interface name to insert into. Optional for top-level members (Kotlin, Python, JS/TS).")
         .stringProperty(ParamNames.CONTENT, "The complete member declaration to insert, including modifiers, type, name, and body.", required = true)
         .enumProperty(ParamNames.POSITION, "Where to insert relative to the anchor: 'before', 'after', 'first', or 'last' (default).", listOf("before", "after", "first", "last"))
         .stringProperty(ParamNames.ANCHOR, "Name of an existing member to insert before/after. Required when position is 'before' or 'after'.")
@@ -94,7 +96,7 @@ class InsertMemberTool : AbstractMcpTool() {
             ?: return Result.failure(Exception("File not found: $filePath"))
 
         val resolver = MemberEditingUtils.getResolver(psiFile, project)
-            ?: return Result.failure(Exception("Member editing not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin."))
+            ?: return Result.failure(Exception("Member editing not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin, Python, JavaScript, TypeScript."))
 
         val scope = resolver.findClass(psiFile, className)
             ?: return Result.failure(

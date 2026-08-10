@@ -42,18 +42,6 @@ import org.jetbrains.annotations.TestOnly
 class SafeDeleteTool : AbstractRefactoringTool() {
 
     companion object {
-        private val pyFunctionClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyFunction") } catch (_: Throwable) { null }
-        }
-        private val pyClassClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyClass") } catch (_: Throwable) { null }
-        }
-        private val jsFunctionClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSFunction") } catch (_: Throwable) { null }
-        }
-        private val jsClassClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.ecmal4.JSClass") } catch (_: Throwable) { null }
-        }
     }
 
     /**
@@ -877,26 +865,26 @@ class SafeDeleteTool : AbstractRefactoringTool() {
     }
 
     private fun getElementType(element: PsiElement): String {
-        try {
-            if (pyFunctionClass?.isAssignableFrom(element.javaClass) == true ||
-                jsFunctionClass?.isAssignableFrom(element.javaClass) == true) {
-                return "function"
-            }
-            if (pyClassClass?.isAssignableFrom(element.javaClass) == true ||
-                jsClassClass?.isAssignableFrom(element.javaClass) == true) {
-                return "class"
-            }
-        } catch (_: Throwable) {
-            // Fallback when reflection fails
-        }
-
         return when {
             element is com.intellij.psi.PsiMethod -> "method"
             element is com.intellij.psi.PsiClass -> "class"
             element is com.intellij.psi.PsiField -> "field"
             element is com.intellij.psi.PsiLocalVariable -> "variable"
             element is com.intellij.psi.PsiParameter -> "parameter"
-            else -> element.javaClass.simpleName.removePrefix("Psi").lowercase()
+            else -> {
+                val interfaces = element.javaClass.interfaces.map { it.simpleName }
+                val namesToCheck = listOf(element.javaClass.simpleName) + interfaces
+                
+                when {
+                    namesToCheck.any { it.contains("Function", ignoreCase = true) || it.contains("Method", ignoreCase = true) } -> "function"
+                    namesToCheck.any { it.contains("Class", ignoreCase = true) || it.contains("Struct", ignoreCase = true) || it.contains("Trait", ignoreCase = true) } -> "class"
+                    namesToCheck.any { it.contains("Interface", ignoreCase = true) } -> "interface"
+                    namesToCheck.any { it.contains("Variable", ignoreCase = true) || it.contains("Property", ignoreCase = true) || it.contains("Field", ignoreCase = true) } -> "variable"
+                    namesToCheck.any { it.contains("Parameter", ignoreCase = true) || it.contains("Param", ignoreCase = true) } -> "parameter"
+                    namesToCheck.any { it.contains("Enum", ignoreCase = true) } -> "enum"
+                    else -> element.javaClass.simpleName.removePrefix("Psi").replace("Impl", "").lowercase()
+                }
+            }
         }
     }
 }

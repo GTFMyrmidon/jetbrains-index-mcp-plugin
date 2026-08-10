@@ -54,7 +54,7 @@
     <li><b>Rename Refactoring</b> - Safe symbol renaming with automatic reference updates - works across ALL languages, fully headless</li>
     <li><b>Reformat Code</b> - Reformat using project code style with import optimization (disabled by default)</li>
     <li><b>Optimize Imports</b> - Remove unused imports and organize remaining imports without reformatting (disabled by default)</li>
-    <li><b>Safe Delete</b> - Remove code safely with usage checking (Java/Kotlin only)</li>
+    <li><b>Safe Delete</b> - Remove code safely with usage checking</li>
 </ul>
 
 <h3>Project Lifecycle Management</h3>

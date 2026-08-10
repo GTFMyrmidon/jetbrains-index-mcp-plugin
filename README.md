@@ -60,7 +60,7 @@ These tools activate based on installed language plugins:
 - **Edit Member** - Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS, disabled by default)
 - **Insert Member** - Insert a new member at a structural position (Java, Kotlin, Python, JS/TS, disabled by default)
 - **Replace Member** - Replace method body or field initializer only, preserving the signature (Java, Kotlin, Python, JS/TS, disabled by default)
-- **Safe Delete** - Remove code with usage checking (Java/Kotlin only)
+- **Safe Delete** - Remove code with usage checking
 - **Change Signature** - Change method signature with automatic caller updates (Java, Python, JS/TS, disabled by default)
 - **Java to Kotlin Conversion** - Convert Java to Kotlin using Intellij's built-in converter (Java only)
 
@@ -324,7 +324,7 @@ PHP file structure support requires the PHP plugin and is available in PhpStorm 
 |------|-------------|
 | `ide_list_tests` | List all test methods/classes discovered by the IDE's test framework extension points (JUnit, TestNG, etc.) *(disabled by default, requires Java plugin)* |
 | `ide_convert_java_to_kotlin` | Convert Java files to Kotlin using IntelliJ's built-in converter *(disabled by default, requires Java + Kotlin plugins)* |
-| `ide_refactor_safe_delete` | Safely delete an element, checking for usages first (Java/Kotlin only) |
+| `ide_refactor_safe_delete` | Safely delete an element, checking for usages first |
 
 > **Note**: Refactoring tools modify source files. All changes support undo via <kbd>Ctrl/Cmd+Z</kbd>.
 

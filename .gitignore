@@ -12,3 +12,6 @@ local.properties
 docs/superpowers
 scripts/build-install.sh
 HANDOFF.md
+bin/
+
+

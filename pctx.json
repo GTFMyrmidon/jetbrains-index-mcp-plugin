@@ -1,0 +1,68 @@
+{
+  "name": "Projects",
+  "version": "0.1.0",
+  "description": "",
+  "disclosure": "catalog",
+  "disabledTools": [
+    "find_references",
+    "search_symbols",
+    "search_text",
+    "get_call_hierarchy",
+    "get_class_hierarchy",
+    "find_implementations",
+    "get_file_outline",
+    "find_dead_code",
+    "analyze_perf",
+    "tune_weights",
+    "check_embedding_drift",
+    "find_repositories",
+    "ide_set_project_mode",
+    "ide_get_project_modes",
+    "ide_set_all_project_modes",
+    "ide_enroll_all_projects",
+    "ide_release_project",
+    "ide_release_all_projects",
+    "ide_lifecycle_log",
+    "ide_set_lifecycle_log_file",
+    "ide_install_plugin",
+    "ide_restart"
+  ],
+  "servers": [
+    {
+      "name": "jcodemunch",
+      "command": "/home/vince/.local/bin/jcodemunch-mcp"
+    },
+    {
+      "name": "jdocmunch",
+      "command": "/home/vince/.local/bin/jdocmunch-mcp"
+    },
+    {
+      "name": "ide-index",
+      "url": "http://127.0.0.1:29170/index-mcp/streamable-http"
+    },
+    {
+      "name": "ide-debugger",
+      "url": "http://127.0.0.1:29190/debugger-mcp/streamable-http"
+    }
+  ],
+  "logger": {
+    "enabled": true,
+    "level": "info",
+    "format": "compact",
+    "colors": true
+  },
+  "telemetry": {
+    "traces": {
+      "enabled": false,
+      "sampling": {
+        "strategy": "always",
+        "rate": 1.0
+      },
+      "exporters": []
+    },
+    "metrics": {
+      "enabled": false,
+      "exporters": []
+    }
+  }
+}

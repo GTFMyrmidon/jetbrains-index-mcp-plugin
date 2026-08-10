@@ -292,11 +292,12 @@ These tools work in all supported JetBrains IDEs.
 | `ide_install_plugin` | Install a plugin zip into the IDE, replacing any existing version — auto-detects `build/distributions/*.zip` when no path is given *(disabled by default)* |
 | `ide_restart` | Restart the IDE — terminates the MCP connection; call after `ide_install_plugin` *(disabled by default)* |
 | `ide_refactor_rename` | Rename a symbol or file and update all references across the project (all languages; use `targetType` for explicit file mode) |
+| `ide_refactor_safe_delete` | Safely delete a symbol or file after checking for usages |
 | `ide_move_file` | Move a file to a new directory, applying language-aware reference/package updates when the IDE provides a semantic move backend |
 | `ide_reformat_code` | Reformat code using project code style with import optimization *(disabled by default)* |
 | `ide_optimize_imports` | Optimize imports without reformatting code *(disabled by default)* |
-| `ide_structural_search_replace` | Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine (Java, Kotlin) *(disabled by default)* |
-| `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ — use instead of Write for `.java`, `.kt`, `.ts`, `.tsx`, `.py` files *(disabled by default)* |
+| `ide_structural_search_replace` | Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine *(disabled by default)* |
+| `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ — use instead of Write for source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`) *(disabled by default)* |
 | `ide_replace_text_in_file` | Find and replace text in a file using IntelliJ's Document API — changes immediately visible to index and PSI without `ide_sync_files` *(disabled by default)* |
 | `ide_change_signature` | Change method signature with automatic caller updates (Java, Python, JS/TS) *(disabled by default)* |
 | `ide_edit_member` | Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS) *(disabled by default)* |
@@ -362,21 +363,21 @@ Timing thresholds are configurable in Settings. Lifecycle management is opt-in (
 
 | IDE | Universal | Navigation | Refactoring |
 |-----|-----------|------------|-------------|
-| IntelliJ IDEA | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + reformat + optimize imports + safe delete + Java→Kotlin |
-| Android Studio | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + reformat + optimize imports + safe delete + Java→Kotlin |
-| PyCharm | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + reformat + optimize imports |
-| WebStorm | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + reformat + optimize imports |
-| GoLand | ✓ all universal tools | ✓ 4 tools | ✓ rename + move + reformat + optimize imports |
-| RustRover | ✓ all universal tools | ✓ 5 tools | ✓ rename + move + reformat + optimize imports |
-| PhpStorm | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + reformat + optimize imports |
+| IntelliJ IDEA | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + safe delete + reformat + optimize imports + Java→Kotlin |
+| Android Studio | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + safe delete + reformat + optimize imports + Java→Kotlin |
+| PyCharm | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + safe delete + reformat + optimize imports |
+| WebStorm | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + safe delete + reformat + optimize imports |
+| GoLand | ✓ all universal tools | ✓ 4 tools | ✓ rename + move + safe delete + reformat + optimize imports |
+| RustRover | ✓ all universal tools | ✓ 5 tools | ✓ rename + move + safe delete + reformat + optimize imports |
+| PhpStorm | ✓ all universal tools | ✓ 6 tools | ✓ rename + move + safe delete + reformat + optimize imports |
 
 **May Work (Untested):**
 
 | IDE | Universal | Navigation | Refactoring |
 |-----|-----------|------------|-------------|
-| RubyMine | ✓ all universal tools | ✓ 2 Markdown tools | ✓ rename + move + reformat + optimize imports |
-| CLion | ✓ all universal tools | ✓ 2 Markdown tools | ✓ rename + move + reformat + optimize imports |
-| DataGrip | ✓ all universal tools | ✓ 2 Markdown tools | ✓ rename + move + reformat + optimize imports |
+| RubyMine | ✓ all universal tools | ✓ 2 Markdown tools | ✓ rename + move + safe delete + reformat + optimize imports |
+| CLion | ✓ all universal tools | ✓ 2 Markdown tools | ✓ rename + move + safe delete + reformat + optimize imports |
+| DataGrip | ✓ all universal tools | ✓ 2 Markdown tools | ✓ rename + move + safe delete + reformat + optimize imports |
 
 > **Note**: Navigation tools activate when language plugins are present. Markdown adds heading search and file-structure support when the bundled Markdown plugin is enabled. Go and Rust do not expose `ide_find_super_methods` due to language semantics, and Go does not expose `ide_find_implementations`. Rename, move, reformat, and optimize-imports tools work across all languages. `ide_convert_java_to_kotlin` is available only in IntelliJ IDEA and Android Studio, requires both Java and Kotlin plugins, and is disabled by default.
 

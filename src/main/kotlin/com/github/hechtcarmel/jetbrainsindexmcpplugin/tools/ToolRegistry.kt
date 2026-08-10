@@ -47,6 +47,7 @@ import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.Reformat
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.RenameSymbolTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.ReplaceMemberTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.ReplaceTextInFileTool
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.SafeDeleteTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.StructuralSearchReplaceTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors
 import com.intellij.openapi.diagnostic.logger
@@ -91,6 +92,7 @@ import java.util.concurrent.ConcurrentHashMap
  * ### Universal Refactoring Tools
  *
  * - `ide_refactor_rename` - Rename symbol (works across ALL languages via RenameProcessor)
+ * - `ide_refactor_safe_delete` - Safely delete element (works across Java, Python, JS/TS, etc.)
  * - `ide_move_file` - Move file to a new directory using the IDE move backend appropriate for that file type
  * - `ide_reformat_code` - Reformat code using project code style (disabled by default)
  * - `ide_optimize_imports` - Optimize imports without reformatting (disabled by default)
@@ -98,7 +100,6 @@ import java.util.concurrent.ConcurrentHashMap
  * ### Java-Specific Tools (IntelliJ IDEA & Android Studio Only)
  *
  * - `ide_list_tests` - List all test methods discovered by test framework extension points (requires Java plugin; uses `com.intellij.testFramework` EP, disabled by default)
- * - `ide_refactor_safe_delete` - Safely delete element (requires Java plugin)
  *
  * ### Kotlin Conversion Tools (IntelliJ IDEA with Java & Kotlin Plugins)
  *
@@ -271,6 +272,7 @@ class ToolRegistry {
 
         // Refactoring tools (universal - uses platform APIs)
         register(RenameSymbolTool())
+        register(SafeDeleteTool())
         register(MoveFileTool())
         register(ReformatCodeTool())
         register(OptimizeImportsTool())
@@ -354,17 +356,14 @@ class ToolRegistry {
      *
      * - [ListTestsTool] uses the `com.intellij.testFramework` extension point, which is
      *   declared by the Java plugin; calling `.extensionList` on it throws in non-Java IDEs.
-     * - [SafeDeleteTool] uses Java-specific refactoring PSI APIs.
      *
-     * Note: RenameSymbolTool has been moved to registerUniversalTools() as it
-     * now uses the platform-level RenameProcessor which works across all languages.
+     * Note: RenameSymbolTool and SafeDeleteTool have been moved to registerUniversalTools().
      *
      * IMPORTANT: This method must only be called after checking [PluginDetectors.java.isAvailable]
      */
     private fun registerJavaRefactoringTools() {
         val refactoringToolClasses = listOf(
-            "com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.project.ListTestsTool",
-            "com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.SafeDeleteTool"
+            "com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.project.ListTestsTool"
         )
 
         for (className in refactoringToolClasses) {

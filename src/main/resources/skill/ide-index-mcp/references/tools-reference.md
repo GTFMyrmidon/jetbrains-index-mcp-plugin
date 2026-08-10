@@ -354,7 +354,7 @@ Move a file to a new directory. Applies language-aware reference, import, and pa
 **Returns**: `{ success, affectedFiles: [paths], changesCount, message }`
 **Supports IDE undo** (Ctrl+Z).
 
-### ide_refactor_safe_delete (Java, Kotlin)
+### ide_refactor_safe_delete
 Delete a symbol or file, checking for usages first.
 
 | Parameter | Type | Required | Description |
@@ -368,7 +368,6 @@ Delete a symbol or file, checking for usages first.
 
 **Returns (success)**: `{ success, affectedFiles, changesCount, message }`
 **Returns (blocked)**: `{ canDelete: false, elementName, usageCount, blockingUsages: [...], message }`
-**Only available in**: IntelliJ IDEA, Android Studio (requires Java plugin).
 
 ### ide_reformat_code (disabled by default)
 Reformat code per project style (.editorconfig, IDE settings). Equivalent to Ctrl+Alt+L / Cmd+Opt+L.
@@ -417,7 +416,7 @@ Pattern-based code search and transformation using IntelliJ's Structural Search 
 | `project_path` | string | no | Project root path |
 
 **Returns**: `{ matchCount, replacedCount, matches: [{ file, line, matchedText }] }`
-**Languages**: Java, Kotlin.
+**Languages**: Any language with an IntelliJ structural search profile installed (e.g., Java, Kotlin, Python, JS/TS).
 
 ### ide_change_signature (disabled by default)
 Change method signature (name, return type, visibility, parameters) with automatic caller updates.
@@ -438,7 +437,7 @@ Change method signature (name, return type, visibility, parameters) with automat
 **Languages**: Java, Python, JS/TS.
 
 ### ide_create_file (disabled by default)
-Create a new source file with content, immediately indexed by IntelliJ. The file is created through IntelliJ's VFS, so it is instantly available for `ide_find_references`, `ide_refactor_rename`, `ide_edit_member`, and all other IDE tools without needing `ide_sync_files`. Use this instead of the Write tool for creating `.java`, `.kt`, `.ts`, `.tsx`, `.py` files. The file must not already exist.
+Create a new source file with content, immediately indexed by IntelliJ. The file is created through IntelliJ's VFS, so it is instantly available for `ide_find_references`, `ide_refactor_rename`, `ide_edit_member`, and all other IDE tools without needing `ide_sync_files`. Use this instead of the Write tool for creating source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`). The file must not already exist.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

@@ -32,10 +32,11 @@ These tools work in every supported JetBrains IDE:
 | `ide_get_active_file` | Get currently active editor file(s) | Disabled |
 | `ide_open_file` | Open file in editor with navigation | Disabled |
 | `ide_refactor_rename` | Rename symbol with reference updates (all languages) | Enabled |
+| `ide_refactor_safe_delete` | Safely delete symbol or file with usage check | Enabled |
 | `ide_move_file` | Move file to new directory with IDE-aware move semantics | Enabled |
 | `ide_reformat_code` | Reformat code using project code style | Disabled |
 | `ide_optimize_imports` | Optimize imports without reformatting code | Disabled |
-| `ide_structural_search_replace` | Pattern-based code search and transformation (Java, Kotlin) | Disabled |
+| `ide_structural_search_replace` | Pattern-based code search and transformation | Disabled |
 | `ide_change_signature` | Change method signature with automatic caller updates (Java, Python, JS/TS) | Disabled |
 | `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ | Disabled |
 | `ide_replace_text_in_file` | Find and replace text using IntelliJ's Document API | Disabled |
@@ -61,7 +62,6 @@ These tools activate based on available language plugins:
 |------|-------------|
 | `ide_list_tests` | List all test methods/classes discovered by the IDE's test frameworks *(disabled by default)* |
 | `ide_convert_java_to_kotlin` | Convert Java files to Kotlin using the IDE converter *(disabled by default)* |
-| `ide_refactor_safe_delete` | Safely delete with usage check |
 
 ### Project Lifecycle Management Tools
 
@@ -123,6 +123,7 @@ see [Claude Code Hooks](docs/claude-code-hooks.md) for ready-to-use `PreToolUse`
   - [ide_open_project](#ide_open_project)
 - [Refactoring Tools](#refactoring-tools)
   - [ide_refactor_rename](#ide_refactor_rename)
+  - [ide_refactor_safe_delete](#ide_refactor_safe_delete)
   - [ide_move_file](#ide_move_file)
   - [ide_reformat_code](#ide_reformat_code)
   - [ide_optimize_imports](#ide_optimize_imports)
@@ -152,7 +153,6 @@ see [Claude Code Hooks](docs/claude-code-hooks.md) for ready-to-use `PreToolUse`
 - [Java-Specific Tools](#java-specific-tools)
   - [ide_list_tests](#ide_list_tests)
   - [ide_convert_java_to_kotlin](#ide_convert_java_to_kotlin)
-  - [ide_refactor_safe_delete](#ide_refactor_safe_delete)
 - [Error Handling](#error-handling)
 
 ---
@@ -1938,7 +1938,7 @@ Optimize imports in a file: remove unused imports and organize the remaining imp
 
 Pattern-based code search and transformation using IntelliJ's Structural Search and Replace (SSR) engine. Matches code patterns structurally rather than textually — understands types, expressions, statements, and code structure.
 
-**Languages:** Java, Kotlin.
+**Languages:** Any language with an IntelliJ structural search profile installed (e.g., Java, Kotlin, Python, JS/TS).
 
 When `replacePattern` is omitted, the tool performs search-only and returns matching locations. When `replacePattern` is provided, the tool replaces all matches.
 
@@ -2156,7 +2156,7 @@ Change a method's signature — name, return type, visibility, and parameters �
 
 Create a new source file with content, immediately indexed by IntelliJ. The file is created through IntelliJ's VFS, so it is instantly available for `ide_find_references`, `ide_refactor_rename`, `ide_edit_member`, and all other IDE tools without needing `ide_sync_files`.
 
-Use this instead of the Write tool for creating `.java`, `.kt`, `.ts`, `.tsx`, `.py` files. The file must not already exist.
+Use this instead of the Write tool for creating source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`). The file must not already exist.
 
 **Use when:**
 - Creating new source files that need to be immediately indexed

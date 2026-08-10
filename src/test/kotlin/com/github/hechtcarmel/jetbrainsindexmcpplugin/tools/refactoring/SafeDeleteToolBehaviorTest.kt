@@ -2,6 +2,7 @@ package com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring
 
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.testutil.McpPlatformTestCase
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.RefactoringResult
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.IndexNotReadyException
@@ -10,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.junit.Assume
 
 /**
  * Behavior coverage for `ide_refactor_safe_delete`.
@@ -633,6 +635,99 @@ class SafeDeleteToolBehaviorTest : McpPlatformTestCase() {
 
         assertNotNull("Cancellation must propagate, not turn into a successful delete", thrown)
         assertFileContains("sd-pcefail-src/pcefail/PceFail.java", "unusedHelper")
+    }
+
+    // ── Multi-language safe delete tests (Python, JS/TS) ──
+
+    fun testPythonSymbolDeletion() = runBlocking {
+        if (!PluginDetectors.python.isAvailable) return@runBlocking Unit
+        registerSourceRoot("sd-py-symbol-src")
+        writeProjectFile(
+            "sd-py-symbol-src/py_symbol.py", """
+            def unused_function():
+                return "unused"
+
+            def keep_function():
+                return "keep"
+        """.trimIndent()
+        )
+
+        assertFileContains("sd-py-symbol-src/py_symbol.py", "unused_function")
+
+        val result = SafeDeleteTool().execute(project, buildJsonObject {
+            put("file", "sd-py-symbol-src/py_symbol.py")
+            put("line", 1)
+            put("column", 5)
+        })
+
+        assertToolSucceeded("Deleting an unreferenced Python function should succeed", result)
+        val payload = decodeRefactoring(toolText(result))
+        assertTrue("Payload must report success", payload.success)
+        assertEquals("Successfully deleted 'unused_function'", payload.message)
+        assertFileDoesNotContain("sd-py-symbol-src/py_symbol.py", "unused_function")
+        assertFileContains("sd-py-symbol-src/py_symbol.py", "keep_function")
+    }
+
+    fun testJsSymbolDeletion() = runBlocking {
+        if (!PluginDetectors.javaScript.isAvailable) return@runBlocking Unit
+        registerSourceRoot("sd-js-symbol-src")
+        writeProjectFile(
+            "sd-js-symbol-src/js_symbol.js", """
+            function unusedFunction() {
+                return "unused";
+            }
+
+            function keepFunction() {
+                return "keep";
+            }
+        """.trimIndent()
+        )
+
+        assertFileContains("sd-js-symbol-src/js_symbol.js", "unusedFunction")
+
+        val result = SafeDeleteTool().execute(project, buildJsonObject {
+            put("file", "sd-js-symbol-src/js_symbol.js")
+            put("line", 1)
+            put("column", 10)
+        })
+
+        assertToolSucceeded("Deleting an unreferenced JS function should succeed", result)
+        val payload = decodeRefactoring(toolText(result))
+        assertTrue("Payload must report success", payload.success)
+        assertEquals("Successfully deleted 'unusedFunction'", payload.message)
+        assertFileDoesNotContain("sd-js-symbol-src/js_symbol.js", "unusedFunction")
+        assertFileContains("sd-js-symbol-src/js_symbol.js", "keepFunction")
+    }
+
+    fun testPythonFileDeletionWithExternalUsagesRefused() = runBlocking {
+        if (!PluginDetectors.python.isAvailable) return@runBlocking Unit
+        registerSourceRoot("sd-py-file-src")
+        writeProjectFile(
+            "sd-py-file-src/py_helper.py", """
+            def helper():
+                return "helper"
+        """.trimIndent()
+        )
+        writeProjectFile(
+            "sd-py-file-src/py_main.py", """
+            from py_helper import helper
+
+            def main():
+                return helper()
+        """.trimIndent()
+        )
+
+        val result = SafeDeleteTool().execute(project, buildJsonObject {
+            put("file", "sd-py-file-src/py_helper.py")
+            put("target_type", "file")
+        })
+
+        assertToolSucceeded("A refusal is a structured answer, not a protocol error", result)
+        val payload = decodeFileBlocked(toolText(result))
+        assertFalse("canDelete must be false while external usages exist", payload.canDelete)
+        assertEquals("py_helper.py", payload.fileName)
+        assertEquals(1, payload.externalUsageCount)
+        assertProjectFileExists("sd-py-file-src/py_helper.py")
     }
 
     /**

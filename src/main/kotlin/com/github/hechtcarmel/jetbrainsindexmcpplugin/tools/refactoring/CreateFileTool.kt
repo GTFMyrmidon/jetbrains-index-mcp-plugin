@@ -29,7 +29,7 @@ class CreateFileTool : AbstractMcpTool() {
         ide_find_references, ide_refactor_rename, ide_edit_member, and all other IDE tools
         without needing ide_sync_files.
 
-        Use this instead of the Write tool for creating .java, .kt, .ts, .tsx, .py files.
+        Use this instead of the Write tool for creating source files (e.g., .java, .kt, .ts, .tsx, .py, .cpp, .cs, .js).
         The file must not already exist.
 
         The file is NOT registered with version control: no "Add File to Git" prompt appears

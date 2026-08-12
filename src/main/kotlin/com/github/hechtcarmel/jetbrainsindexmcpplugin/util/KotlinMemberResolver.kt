@@ -11,28 +11,28 @@ class KotlinMemberResolver(private val project: Project) : MemberResolver {
         private val LOG = logger<KotlinMemberResolver>()
 
         private val ktFileClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtFile") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtFile") } catch (e: ClassNotFoundException) { null }
         }
         private val ktClassClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtClass") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtClass") } catch (e: ClassNotFoundException) { null }
         }
         private val ktClassOrObjectClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtClassOrObject") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtClassOrObject") } catch (e: ClassNotFoundException) { null }
         }
         private val ktNamedFunctionClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtNamedFunction") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtNamedFunction") } catch (e: ClassNotFoundException) { null }
         }
         private val ktPropertyClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtProperty") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtProperty") } catch (e: ClassNotFoundException) { null }
         }
         private val ktObjectDeclarationClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtObjectDeclaration") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtObjectDeclaration") } catch (e: ClassNotFoundException) { null }
         }
         private val ktNamedDeclarationClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtNamedDeclaration") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtNamedDeclaration") } catch (e: ClassNotFoundException) { null }
         }
         private val ktClassBodyClass: Class<*>? by lazy {
-            try { Class.forName("org.jetbrains.kotlin.psi.KtClassBody") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.jetbrains.kotlin.psi.KtClassBody") } catch (e: ClassNotFoundException) { null }
         }
     }
 

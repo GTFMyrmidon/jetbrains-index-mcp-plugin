@@ -11,28 +11,28 @@ class RustMemberResolver(private val project: Project) : MemberResolver {
         private val LOG = logger<RustMemberResolver>()
 
         private val rsFileClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsFile") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsFile") } catch (e: ClassNotFoundException) { null }
         }
         private val rsStructItemClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsStructItem") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsStructItem") } catch (e: ClassNotFoundException) { null }
         }
         private val rsEnumItemClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsEnumItem") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsEnumItem") } catch (e: ClassNotFoundException) { null }
         }
         private val rsTraitItemClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsTraitItem") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsTraitItem") } catch (e: ClassNotFoundException) { null }
         }
         private val rsImplItemClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsImplItem") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsImplItem") } catch (e: ClassNotFoundException) { null }
         }
         private val rsFunctionClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsFunction") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsFunction") } catch (e: ClassNotFoundException) { null }
         }
         private val rsBlockClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsBlock") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsBlock") } catch (e: ClassNotFoundException) { null }
         }
         private val rsUseItemClass: Class<*>? by lazy {
-            try { Class.forName("org.rust.lang.core.psi.RsUseItem") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("org.rust.lang.core.psi.RsUseItem") } catch (e: ClassNotFoundException) { null }
         }
     }
 

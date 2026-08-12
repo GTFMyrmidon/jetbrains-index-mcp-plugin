@@ -11,31 +11,31 @@ class GoMemberResolver(private val project: Project) : MemberResolver {
         private val LOG = logger<GoMemberResolver>()
 
         private val goFileClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoFile") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoFile") } catch (e: ClassNotFoundException) { null }
         }
         private val goTypeSpecClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoTypeSpec") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoTypeSpec") } catch (e: ClassNotFoundException) { null }
         }
         private val goFunctionDeclarationClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoFunctionDeclaration") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoFunctionDeclaration") } catch (e: ClassNotFoundException) { null }
         }
         private val goMethodDeclarationClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoMethodDeclaration") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoMethodDeclaration") } catch (e: ClassNotFoundException) { null }
         }
         private val goStructTypeClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoStructType") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoStructType") } catch (e: ClassNotFoundException) { null }
         }
         private val goInterfaceTypeClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoInterfaceType") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoInterfaceType") } catch (e: ClassNotFoundException) { null }
         }
         private val goBlockClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoBlock") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoBlock") } catch (e: ClassNotFoundException) { null }
         }
         private val goImportListClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoImportList") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoImportList") } catch (e: ClassNotFoundException) { null }
         }
         private val goFieldDefinitionClass: Class<*>? by lazy {
-            try { Class.forName("com.goide.psi.GoFieldDefinition") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.goide.psi.GoFieldDefinition") } catch (e: ClassNotFoundException) { null }
         }
     }
 

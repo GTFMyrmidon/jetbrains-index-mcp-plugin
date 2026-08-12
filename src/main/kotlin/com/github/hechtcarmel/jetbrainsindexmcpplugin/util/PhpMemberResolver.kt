@@ -11,22 +11,22 @@ class PhpMemberResolver(private val project: Project) : MemberResolver {
         private val LOG = logger<PhpMemberResolver>()
 
         private val phpFileClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.php.lang.psi.PhpFile") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.php.lang.psi.PhpFile") } catch (e: ClassNotFoundException) { null }
         }
         private val phpClassClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.php.lang.psi.elements.PhpClass") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.php.lang.psi.elements.PhpClass") } catch (e: ClassNotFoundException) { null }
         }
         private val methodClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.php.lang.psi.elements.Method") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.php.lang.psi.elements.Method") } catch (e: ClassNotFoundException) { null }
         }
         private val functionClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.php.lang.psi.elements.Function") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.php.lang.psi.elements.Function") } catch (e: ClassNotFoundException) { null }
         }
         private val fieldClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.php.lang.psi.elements.Field") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.php.lang.psi.elements.Field") } catch (e: ClassNotFoundException) { null }
         }
         private val phpUseClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.php.lang.psi.elements.PhpUse") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.php.lang.psi.elements.PhpUse") } catch (e: ClassNotFoundException) { null }
         }
     }
 

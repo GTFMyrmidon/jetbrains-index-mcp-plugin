@@ -20,19 +20,19 @@ object BuildListenerUtils {
 
     // Cached reflection classes for build events
     private val messageEventClass: Class<*>? by lazy {
-        try { Class.forName("com.intellij.build.events.MessageEvent") } catch (_: ClassNotFoundException) { null }
+        try { Class.forName("com.intellij.build.events.MessageEvent") } catch (e: ClassNotFoundException) { null }
     }
     private val fileMessageEventClass: Class<*>? by lazy {
-        try { Class.forName("com.intellij.build.events.FileMessageEvent") } catch (_: ClassNotFoundException) { null }
+        try { Class.forName("com.intellij.build.events.FileMessageEvent") } catch (e: ClassNotFoundException) { null }
     }
     private val outputEventClass: Class<*>? by lazy {
-        try { Class.forName("com.intellij.build.events.OutputBuildEvent") } catch (_: ClassNotFoundException) { null }
+        try { Class.forName("com.intellij.build.events.OutputBuildEvent") } catch (e: ClassNotFoundException) { null }
     }
     private val finishEventClass: Class<*>? by lazy {
-        try { Class.forName("com.intellij.build.events.FinishEvent") } catch (_: ClassNotFoundException) { null }
+        try { Class.forName("com.intellij.build.events.FinishEvent") } catch (e: ClassNotFoundException) { null }
     }
     private val failureResultClass: Class<*>? by lazy {
-        try { Class.forName("com.intellij.build.events.FailureResult") } catch (_: ClassNotFoundException) { null }
+        try { Class.forName("com.intellij.build.events.FailureResult") } catch (e: ClassNotFoundException) { null }
     }
 
     /**

@@ -11,26 +11,26 @@ class JavaScriptMemberResolver(private val project: Project) : MemberResolver {
         private val LOG = logger<JavaScriptMemberResolver>()
 
         private val jsFileClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSFile") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.JSFile") } catch (e: ClassNotFoundException) { null }
         }
         private val jsClassClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.ecmal4.JSClass") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.ecmal4.JSClass") } catch (e: ClassNotFoundException) { null }
         }
         private val jsFunctionClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSFunction") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.JSFunction") } catch (e: ClassNotFoundException) { null }
         }
         private val jsVariableClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSVariable") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.JSVariable") } catch (e: ClassNotFoundException) { null }
         }
         private val jsBlockStatementClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSBlockStatement") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.JSBlockStatement") } catch (e: ClassNotFoundException) { null }
         }
         private val jsFieldClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSField") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.JSField") } catch (e: ClassNotFoundException) { null }
         }
         private val jsImportStatementClass: Class<*>? by lazy {
-            try { Class.forName("com.intellij.lang.javascript.psi.JSImportStatement") } catch (_: ClassNotFoundException) {
-                try { Class.forName("com.intellij.lang.javascript.psi.ecmal4.JSImportStatement") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.intellij.lang.javascript.psi.JSImportStatement") } catch (e: ClassNotFoundException) {
+                try { Class.forName("com.intellij.lang.javascript.psi.ecmal4.JSImportStatement") } catch (e: ClassNotFoundException) { null }
             }
         }
     }

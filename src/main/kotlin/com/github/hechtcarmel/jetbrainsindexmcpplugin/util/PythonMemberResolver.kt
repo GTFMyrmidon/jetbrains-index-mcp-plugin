@@ -11,22 +11,22 @@ class PythonMemberResolver(private val project: Project) : MemberResolver {
         private val LOG = logger<PythonMemberResolver>()
 
         private val pyFileClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyFile") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.python.psi.PyFile") } catch (e: ClassNotFoundException) { null }
         }
         private val pyClassClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyClass") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.python.psi.PyClass") } catch (e: ClassNotFoundException) { null }
         }
         private val pyFunctionClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyFunction") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.python.psi.PyFunction") } catch (e: ClassNotFoundException) { null }
         }
         private val pyTargetExpressionClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyTargetExpression") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.python.psi.PyTargetExpression") } catch (e: ClassNotFoundException) { null }
         }
         private val pyStatementListClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyStatementList") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.python.psi.PyStatementList") } catch (e: ClassNotFoundException) { null }
         }
         private val pyImportStatementBaseClass: Class<*>? by lazy {
-            try { Class.forName("com.jetbrains.python.psi.PyImportStatementBase") } catch (_: ClassNotFoundException) { null }
+            try { Class.forName("com.jetbrains.python.psi.PyImportStatementBase") } catch (e: ClassNotFoundException) { null }
         }
     }
 

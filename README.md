@@ -299,10 +299,10 @@ These tools work in all supported JetBrains IDEs.
 | `ide_structural_search_replace` | Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine *(disabled by default)* |
 | `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ — use instead of Write for source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`) *(disabled by default)* |
 | `ide_replace_text_in_file` | Find and replace text in a file using IntelliJ's Document API — changes immediately visible to index and PSI without `ide_sync_files` *(disabled by default)* |
-| `ide_change_signature` | Change method signature with automatic caller updates (Java, Python, JS/TS) *(disabled by default)* |
-| `ide_edit_member` | Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS) *(disabled by default)* |
-| `ide_insert_member` | Insert a new member at a structural position in a class or file (Java, Kotlin, Python, JS/TS) *(disabled by default)* |
-| `ide_replace_member` | Replace a method body or field initializer only, preserving the signature (Java, Kotlin, Python, JS/TS) *(disabled by default)* |
+| `ide_change_signature` | Change method signature with automatic caller updates (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
+| `ide_edit_member` | Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
+| `ide_insert_member` | Insert a new member at a structural position in a class or file (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
+| `ide_replace_member` | Replace a method body or field initializer only, preserving the signature (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
 
 ### Extended Tools (Language-Aware)
 

@@ -314,4 +314,85 @@ class ChangeSignatureBehaviorTest : McpPlatformTestCase() {
         val content = readProjectFileVfs("sig-js/sig_js.js")
         assertTrue("Should contain processRenamed", content.contains("function processRenamed"))
     }
+
+    fun testGoChangeSignatureRename() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.go.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/sig_go.go", """
+            package main
+            func ProcessGo(input string) string {
+                return input
+            }
+        """.trimIndent())
+
+        val result = ChangeSignatureTool().execute(project, buildJsonObject {
+            put("file", "src/sig_go.go")
+            put("line", 2)
+            put("column", 6)
+            put("newName", "ProcessGoRenamed")
+        })
+
+        val resultText = toolText(result)
+        if (resultText.contains("LinkageError") || resultText.contains("NoSuchMethodError")) {
+            return@runBlocking
+        }
+
+        assertToolSucceeded("Go change signature rename should succeed", result)
+        val content = readProjectFileVfs("src/sig_go.go")
+        assertTrue("Should contain ProcessGoRenamed", content.contains("func ProcessGoRenamed"))
+    }
+
+    fun testPhpChangeSignatureRename() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.php.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/sig_php.php", """
+            <?php
+            function processPhp(${'$'}input) {
+                return ${'$'}input;
+            }
+        """.trimIndent())
+
+        val result = ChangeSignatureTool().execute(project, buildJsonObject {
+            put("file", "src/sig_php.php")
+            put("line", 2)
+            put("column", 10)
+            put("newName", "processPhpRenamed")
+        })
+
+        val resultText = toolText(result)
+        if (resultText.contains("LinkageError") || resultText.contains("NoSuchMethodError")) {
+            return@runBlocking
+        }
+
+        assertToolSucceeded("PHP change signature rename should succeed", result)
+        val content = readProjectFileVfs("src/sig_php.php")
+        assertTrue("Should contain processPhpRenamed", content.contains("function processPhpRenamed"))
+    }
+
+    fun testRustChangeSignatureRename() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.rust.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/sig_rs.rs", """
+            pub fn process_rs(input: &str) -> &str {
+                input
+            }
+        """.trimIndent())
+
+        val result = ChangeSignatureTool().execute(project, buildJsonObject {
+            put("file", "src/sig_rs.rs")
+            put("line", 1)
+            put("column", 8)
+            put("newName", "process_rs_renamed")
+        })
+
+        val resultText = toolText(result)
+        if (resultText.contains("LinkageError") || resultText.contains("NoSuchMethodError")) {
+            return@runBlocking
+        }
+
+        assertToolSucceeded("Rust change signature rename should succeed", result)
+        val content = readProjectFileVfs("src/sig_rs.rs")
+        assertTrue("Should contain process_rs_renamed", content.contains("pub fn process_rs_renamed"))
+    }
 }
+

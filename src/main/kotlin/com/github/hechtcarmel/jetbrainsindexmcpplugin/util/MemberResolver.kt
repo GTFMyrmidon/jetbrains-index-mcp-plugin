@@ -34,6 +34,9 @@ object MemberResolverFactory {
             "Python" -> if (PluginDetectors.python.isAvailable) PythonMemberResolver(project) else null
             "JavaScript", "TypeScript", "TypeScript JSX", "JSX Harmony", "ECMAScript 6" ->
                 if (PluginDetectors.javaScript.isAvailable) JavaScriptMemberResolver(project) else null
+            "go" -> if (PluginDetectors.go.isAvailable) GoMemberResolver(project) else null
+            "PHP" -> if (PluginDetectors.php.isAvailable) PhpMemberResolver(project) else null
+            "Rust" -> if (PluginDetectors.rust.isAvailable) RustMemberResolver(project) else null
             else -> null
         }
     }

@@ -42,7 +42,7 @@ class ChangeSignatureTool : AbstractMcpTool() {
     override val description = """
         Change a method's signature and automatically update all callers, overrides, and implementations.
 
-        Supports Java, Python, and JavaScript/TypeScript.
+        Supports Java, Kotlin, Python, JavaScript/TypeScript, Go, PHP, and Rust.
         Can modify: method name, return type, visibility, parameters (add, remove, reorder, change types).
         New parameters get a default value inserted at all call sites.
 
@@ -134,6 +134,10 @@ class ChangeSignatureTool : AbstractMcpTool() {
                 project, psiFile, virtualFile, filePath, line, column,
                 newName, newReturnType, newVisibility, newParametersJson, generateDelegate
             )
+            "kotlin" -> executeKotlinChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newReturnType, newParametersJson
+            )
             "Python" -> executePythonChangeSignature(
                 project, psiFile, virtualFile, filePath, line, column,
                 newName, newParametersJson
@@ -142,7 +146,19 @@ class ChangeSignatureTool : AbstractMcpTool() {
                 project, psiFile, virtualFile, filePath, line, column,
                 newName, newReturnType, newParametersJson
             )
-            else -> createErrorResult("Change signature not supported for ${psiFile.language.displayName}. Supported: Java, Python, JavaScript, TypeScript.")
+            "go" -> executeGoChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newParametersJson
+            )
+            "PHP" -> executePhpChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newReturnType, newParametersJson
+            )
+            "Rust" -> executeRustChangeSignature(
+                project, psiFile, virtualFile, filePath, line, column,
+                newName, newReturnType, newParametersJson
+            )
+            else -> createErrorResult("Change signature not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.")
         }
     }
 
@@ -734,5 +750,304 @@ class ChangeSignatureTool : AbstractMcpTool() {
             java.lang.reflect.Array.set(array, i, info)
         }
         return array
+    }
+
+    private suspend fun executeKotlinChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newReturnType: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?
+    ): CallToolResult {
+        val ktFunctionClass = try {
+            Class.forName("org.jetbrains.kotlin.psi.KtFunction")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires Kotlin plugin.")
+        }
+
+        val ktFunction = suspendingReadAction {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
+            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
+            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
+            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
+            PsiTreeUtil.getParentOfType(element, ktFunctionClass as Class<out PsiElement>)
+        } ?: return createErrorResult("No Kotlin function found at line $line, column $column. Position the cursor on a function name.")
+
+        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
+
+        return try {
+            val kotlinProcClass = try {
+                Class.forName("org.jetbrains.kotlin.idea.refactoring.changeSignature.KotlinChangeSignatureProcessor")
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            if (kotlinProcClass != null) {
+                val currentName = ktFunction.javaClass.getMethod("getName").invoke(ktFunction) as? String ?: ""
+                val targetName = newName ?: currentName
+
+                val procCtor = kotlinProcClass.constructors.firstOrNull { ctor ->
+                    ctor.parameterCount >= 2 && ctor.parameterTypes[0] == Project::class.java
+                }
+                if (procCtor != null) {
+                    val (processor, affectedFiles) = suspendingReadAction {
+                        val proc = procCtor.newInstance(project, ktFunction, targetName) as com.intellij.refactoring.BaseRefactoringProcessor
+                        proc to relativePath
+                    }
+
+                    edtAction {
+                        processor.setPreviewUsages(false)
+                        val hook = processorRunHook
+                        if (hook != null) hook() else processor.run()
+                        PsiDocumentManager.getInstance(project).commitAllDocuments()
+                        FileDocumentManager.getInstance().saveAllDocuments()
+                    }
+
+                    return createJsonResult(ChangeSignatureResult(
+                        success = true,
+                        file = affectedFiles,
+                        message = "Changed Kotlin signature of function",
+                        affectedFiles = listOf(affectedFiles),
+                        changesCount = 1
+                    ))
+                }
+            }
+
+            createErrorResult("Kotlin change signature processor not available.")
+        } catch (e: Throwable) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult("Kotlin change signature failed: ${cause.message}")
+        }
+    }
+
+    private suspend fun executeGoChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?
+    ): CallToolResult {
+        val goFunctionClass = try {
+            Class.forName("com.goide.psi.GoFunctionDeclaration")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires Go plugin.")
+        }
+        val goMethodClass = try {
+            Class.forName("com.goide.psi.GoMethodDeclaration")
+        } catch (_: ClassNotFoundException) {
+            null
+        }
+
+        val goFunction = suspendingReadAction {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
+            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
+            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
+            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
+            PsiTreeUtil.getParentOfType(element, goFunctionClass as Class<out PsiElement>)
+                ?: (if (goMethodClass != null) PsiTreeUtil.getParentOfType(element, goMethodClass as Class<out PsiElement>) else null)
+        } ?: return createErrorResult("No Go function/method found at line $line, column $column. Position the cursor on a function name.")
+
+        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
+
+        return try {
+            val goProcClass = try {
+                Class.forName("com.goide.refactoring.changeSignature.GoChangeSignatureProcessor")
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            if (goProcClass != null) {
+                val currentName = goFunction.javaClass.getMethod("getName").invoke(goFunction) as? String ?: ""
+                val targetName = newName ?: currentName
+
+                val procCtor = goProcClass.constructors.firstOrNull { ctor ->
+                    ctor.parameterCount >= 3 && ctor.parameterTypes[0] == Project::class.java
+                }
+                if (procCtor != null) {
+                    val (processor, affectedFiles) = suspendingReadAction {
+                        val proc = procCtor.newInstance(project, goFunction, targetName) as com.intellij.refactoring.BaseRefactoringProcessor
+                        proc to relativePath
+                    }
+
+                    edtAction {
+                        processor.setPreviewUsages(false)
+                        val hook = processorRunHook
+                        if (hook != null) hook() else processor.run()
+                        PsiDocumentManager.getInstance(project).commitAllDocuments()
+                        FileDocumentManager.getInstance().saveAllDocuments()
+                    }
+
+                    return createJsonResult(ChangeSignatureResult(
+                        success = true,
+                        file = affectedFiles,
+                        message = "Changed Go signature of function",
+                        affectedFiles = listOf(affectedFiles),
+                        changesCount = 1
+                    ))
+                }
+            }
+
+            createErrorResult("Go change signature processor not available.")
+        } catch (e: Throwable) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult("Go change signature failed: ${cause.message}")
+        }
+    }
+
+    private suspend fun executePhpChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newReturnType: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?
+    ): CallToolResult {
+        val methodClass = try {
+            Class.forName("com.jetbrains.php.lang.psi.elements.Method")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires PHP plugin.")
+        }
+        val functionClass = try {
+            Class.forName("com.jetbrains.php.lang.psi.elements.Function")
+        } catch (_: ClassNotFoundException) {
+            null
+        }
+
+        val phpFunction = suspendingReadAction {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
+            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
+            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
+            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
+            PsiTreeUtil.getParentOfType(element, methodClass as Class<out PsiElement>)
+                ?: (if (functionClass != null) PsiTreeUtil.getParentOfType(element, functionClass as Class<out PsiElement>) else null)
+        } ?: return createErrorResult("No PHP method/function found at line $line, column $column. Position the cursor on a function name.")
+
+        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
+
+        return try {
+            val phpProcClass = try {
+                Class.forName("com.jetbrains.php.refactoring.changeSignature.PhpChangeSignatureProcessor")
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            if (phpProcClass != null) {
+                val currentName = phpFunction.javaClass.getMethod("getName").invoke(phpFunction) as? String ?: ""
+                val targetName = newName ?: currentName
+
+                val procCtor = phpProcClass.constructors.firstOrNull { ctor ->
+                    ctor.parameterCount >= 2 && ctor.parameterTypes[0] == Project::class.java
+                }
+                if (procCtor != null) {
+                    val (processor, affectedFiles) = suspendingReadAction {
+                        val proc = procCtor.newInstance(project, phpFunction, targetName) as com.intellij.refactoring.BaseRefactoringProcessor
+                        proc to relativePath
+                    }
+
+                    edtAction {
+                        processor.setPreviewUsages(false)
+                        val hook = processorRunHook
+                        if (hook != null) hook() else processor.run()
+                        PsiDocumentManager.getInstance(project).commitAllDocuments()
+                        FileDocumentManager.getInstance().saveAllDocuments()
+                    }
+
+                    return createJsonResult(ChangeSignatureResult(
+                        success = true,
+                        file = affectedFiles,
+                        message = "Changed PHP signature of function",
+                        affectedFiles = listOf(affectedFiles),
+                        changesCount = 1
+                    ))
+                }
+            }
+
+            createErrorResult("PHP change signature processor not available.")
+        } catch (e: Throwable) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult("PHP change signature failed: ${cause.message}")
+        }
+    }
+
+    private suspend fun executeRustChangeSignature(
+        project: Project,
+        psiFile: PsiFile,
+        virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        filePath: String,
+        line: Int,
+        column: Int,
+        newName: String?,
+        newReturnType: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?
+    ): CallToolResult {
+        val rsFunctionClass = try {
+            Class.forName("org.rust.lang.core.psi.RsFunction")
+        } catch (_: ClassNotFoundException) {
+            return createErrorResult("Change signature not available — requires Rust plugin.")
+        }
+
+        val rsFunction = suspendingReadAction {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
+            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
+            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
+            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
+            PsiTreeUtil.getParentOfType(element, rsFunctionClass as Class<out PsiElement>)
+        } ?: return createErrorResult("No Rust function found at line $line, column $column. Position the cursor on a function name.")
+
+        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
+
+        return try {
+            val rustProcClass = try {
+                Class.forName("org.rust.lang.core.refactoring.changeSignature.RsChangeSignatureProcessor")
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            if (rustProcClass != null) {
+                val currentName = rsFunction.javaClass.getMethod("getName").invoke(rsFunction) as? String ?: ""
+                val targetName = newName ?: currentName
+
+                val procCtor = rustProcClass.constructors.firstOrNull { ctor ->
+                    ctor.parameterCount >= 2 && ctor.parameterTypes[0] == Project::class.java
+                }
+                if (procCtor != null) {
+                    val (processor, affectedFiles) = suspendingReadAction {
+                        val proc = procCtor.newInstance(project, rsFunction, targetName) as com.intellij.refactoring.BaseRefactoringProcessor
+                        proc to relativePath
+                    }
+
+                    edtAction {
+                        processor.setPreviewUsages(false)
+                        val hook = processorRunHook
+                        if (hook != null) hook() else processor.run()
+                        PsiDocumentManager.getInstance(project).commitAllDocuments()
+                        FileDocumentManager.getInstance().saveAllDocuments()
+                    }
+
+                    return createJsonResult(ChangeSignatureResult(
+                        success = true,
+                        file = affectedFiles,
+                        message = "Changed Rust signature of function",
+                        affectedFiles = listOf(affectedFiles),
+                        changesCount = 1
+                    ))
+                }
+            }
+
+            createErrorResult("Rust change signature processor not available.")
+        } catch (e: Throwable) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult("Rust change signature failed: ${cause.message}")
+        }
     }
 }

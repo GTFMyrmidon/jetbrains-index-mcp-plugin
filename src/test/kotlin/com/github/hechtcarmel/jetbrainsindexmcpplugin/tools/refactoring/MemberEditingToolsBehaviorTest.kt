@@ -979,4 +979,141 @@ class MemberEditingToolsBehaviorTest : McpPlatformTestCase() {
         val payload = parseErrorResult(result)
         assertEquals("member_not_found", payload.error)
     }
+
+    // ── Go: Member Editing ──
+
+    fun testGoReplaceMethodBody() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.go.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/calc.go", """
+            package main
+
+            type Calculator struct{}
+
+            func (c *Calculator) Add(a int, b int) int {
+                return a + b
+            }
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/calc.go")
+            put("class", "Calculator")
+            put("member", "Add")
+            put("content", "return a + b + 1")
+        })
+
+        assertToolSucceeded("Go replace method body should succeed", result)
+        val content = readProjectFile("src/calc.go")
+        assertTrue("Go method body should be replaced", content.contains("a + b + 1"))
+    }
+
+    fun testGoInsertTopLevelFunction() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.go.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/main.go", """
+            package main
+
+            func main() {}
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/main.go")
+            put("content", "func Helper() string { return \"ok\" }")
+        })
+
+        assertToolSucceeded("Go insert top-level function should succeed", result)
+        val content = readProjectFile("src/main.go")
+        assertTrue("Go file should contain inserted function", content.contains("Helper() string"))
+    }
+
+    // ── PHP: Member Editing ──
+
+    fun testPhpReplaceMethodBody() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.php.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/Calculator.php", """
+            <?php
+            class Calculator {
+                public function add(${'$'}a, ${'$'}b) {
+                    return ${'$'}a + ${'$'}b;
+                }
+            }
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/Calculator.php")
+            put("class", "Calculator")
+            put("member", "add")
+            put("content", "return ${'$'}a + ${'$'}b + 1;")
+        })
+
+        assertToolSucceeded("PHP replace method body should succeed", result)
+        val content = readProjectFile("src/Calculator.php")
+        assertTrue("PHP method body should be replaced", content.contains("${'$'}a + ${'$'}b + 1"))
+    }
+
+    fun testPhpInsertClassMethod() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.php.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/User.php", """
+            <?php
+            class User {
+                public function getName() { return "Alice"; }
+            }
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/User.php")
+            put("class", "User")
+            put("content", "public function getAge() { return 30; }")
+        })
+
+        assertToolSucceeded("PHP insert class method should succeed", result)
+        val content = readProjectFile("src/User.php")
+        assertTrue("PHP class should contain inserted method", content.contains("getAge()"))
+    }
+
+    // ── Rust: Member Editing ──
+
+    fun testRustReplaceFunctionBody() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.rust.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/lib.rs", """
+            pub fn add(a: i32, b: i32) -> i32 {
+                a + b
+            }
+        """.trimIndent())
+
+        val result = ReplaceMemberTool().execute(project, buildJsonObject {
+            put("file", "src/lib.rs")
+            put("member", "add")
+            put("content", "a + b + 1")
+        })
+
+        assertToolSucceeded("Rust replace function body should succeed", result)
+        val content = readProjectFile("src/lib.rs")
+        assertTrue("Rust function body should be replaced", content.contains("a + b + 1"))
+    }
+
+    fun testRustInsertImplFunction() = runBlocking {
+        if (!com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PluginDetectors.rust.isAvailable) return@runBlocking Unit
+
+        writeProjectFile("src/main.rs", """
+            struct MyStruct;
+            impl MyStruct {
+                pub fn new() -> Self { MyStruct }
+            }
+        """.trimIndent())
+
+        val result = InsertMemberTool().execute(project, buildJsonObject {
+            put("file", "src/main.rs")
+            put("class", "MyStruct")
+            put("content", "pub fn do_something(&self) {}")
+        })
+
+        assertToolSucceeded("Rust insert impl function should succeed", result)
+        val content = readProjectFile("src/main.rs")
+        assertTrue("Rust impl block should contain inserted method", content.contains("do_something"))
+    }
 }
+

@@ -37,12 +37,12 @@ These tools work in every supported JetBrains IDE:
 | `ide_reformat_code` | Reformat code using project code style | Disabled |
 | `ide_optimize_imports` | Optimize imports without reformatting code | Disabled |
 | `ide_structural_search_replace` | Pattern-based code search and transformation | Disabled |
-| `ide_change_signature` | Change method signature with automatic caller updates (Java, Python, JS/TS) | Disabled |
+| `ide_change_signature` | Change method signature with automatic caller updates (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) | Disabled |
 | `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ | Disabled |
 | `ide_replace_text_in_file` | Find and replace text using IntelliJ's Document API | Disabled |
-| `ide_edit_member` | Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS) | Disabled |
-| `ide_insert_member` | Insert a new member at a structural position (Java, Kotlin, Python, JS/TS) | Disabled |
-| `ide_replace_member` | Replace method body or field initializer, preserving signature (Java, Kotlin, Python, JS/TS) | Disabled |
+| `ide_edit_member` | Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) | Disabled |
+| `ide_insert_member` | Insert a new member at a structural position (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) | Disabled |
+| `ide_replace_member` | Replace method body or field initializer, preserving signature (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) | Disabled |
 
 ## Extended Tools (Language-Aware)
 
@@ -2008,7 +2008,7 @@ When `replacePattern` is omitted, the tool performs search-only and returns matc
 
 Replace an entire member declaration (signature + body) with new content. The tool locates the member by name, optional parameter count, and optional line number, then replaces the complete declaration.
 
-**Languages:** Java, Kotlin, Python, JavaScript, TypeScript.
+**Languages:** Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.
 
 **Use when:**
 - Rewriting a method signature and body together
@@ -2064,7 +2064,7 @@ Replace an entire member declaration (signature + body) with new content. The to
 
 Change a method's signature — name, return type, visibility, and parameters — with automatic updates to all callers using IntelliJ's Change Signature refactoring. Supports reordering, adding, removing, and renaming parameters.
 
-**Languages:** Java, Python, JavaScript, TypeScript.
+**Languages:** Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.
 
 **Use when:**
 - Adding a new parameter to a method and providing a default value for existing callers
@@ -2272,7 +2272,7 @@ Use this for mechanical text substitutions — e.g., replacing a method call wra
 
 Insert a new member (method, field, inner class, etc.) at a structural position within a class or at the top level of a file.
 
-**Languages:** Java, Kotlin, Python, JavaScript, TypeScript.
+**Languages:** Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.
 
 **Use when:**
 - Adding a new method to a class
@@ -2330,7 +2330,7 @@ Insert a new member (method, field, inner class, etc.) at a structural position 
 
 Replace only the body of a method or the initializer of a field, preserving the existing signature. This is safer than `ide_edit_member` when the signature should remain unchanged.
 
-**Languages:** Java, Kotlin, Python, JavaScript, TypeScript.
+**Languages:** Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.
 
 **Use when:**
 - Changing method implementation without altering the signature

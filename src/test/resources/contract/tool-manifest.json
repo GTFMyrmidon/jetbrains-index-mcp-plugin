@@ -165,7 +165,7 @@ schema:
 description:
   Change a method's signature and automatically update all callers, overrides, and implementations.
   
-  Supports Java, Python, and JavaScript/TypeScript.
+  Supports Java, Kotlin, Python, JavaScript/TypeScript, Go, PHP, and Rust.
   Can modify: method name, return type, visibility, parameters (add, remove, reorder, change types).
   New parameters get a default value inserted at all call sites.
   
@@ -482,7 +482,7 @@ schema:
     {
       "class":
       {
-        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS).",
+        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS, Go, PHP, Rust).",
         "type": "string"
       },
       "content":
@@ -1223,7 +1223,7 @@ schema:
       },
       "class":
       {
-        "description": "Class/interface name to insert into. Optional for top-level members (Kotlin, Python, JS/TS).",
+        "description": "Class/interface name to insert into. Optional for top-level members (Kotlin, Python, JS/TS, Go, PHP, Rust).",
         "type": "string"
       },
       "content":
@@ -2050,7 +2050,7 @@ schema:
     {
       "class":
       {
-        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS).",
+        "description": "Class/interface name containing the member. Optional for top-level members (Kotlin, Python, JS/TS, Go, PHP, Rust).",
         "type": "string"
       },
       "content":

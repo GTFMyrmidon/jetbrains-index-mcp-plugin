@@ -5,8 +5,8 @@
 ## [Unreleased]
 
 ### Added
-- **`ide_edit_member`, `ide_insert_member`, `ide_replace_member`** now support Python and JavaScript/TypeScript in addition to Java and Kotlin.
-- **`ide_change_signature`** now supports Python and JavaScript/TypeScript in addition to Java.
+- **`ide_edit_member`, `ide_insert_member`, `ide_replace_member`** now support Go, PHP, and Rust in addition to Java, Kotlin, Python, and JavaScript/TypeScript.
+- **`ide_change_signature`** now supports Kotlin, Go, PHP, and Rust in addition to Java, Python, and JavaScript/TypeScript.
 
 ### Changed
 - **`ide_refactor_safe_delete`** extended to universal tools with Python and JavaScript/TypeScript element type support.

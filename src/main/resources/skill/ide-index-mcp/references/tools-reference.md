@@ -418,7 +418,7 @@ Pattern-based code search and transformation using IntelliJ's Structural Search 
 **Returns**: `{ matchCount, replacedCount, matches: [{ file, line, matchedText }] }`
 **Languages**: Any language with an IntelliJ structural search profile installed (e.g., Java, Kotlin, Python, JS/TS).
 
-### ide_change_signature (disabled by default)
+### ide_change_signature (disabled by default, Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
 Change method signature (name, return type, visibility, parameters) with automatic caller updates.
 
 | Parameter | Type | Required | Description |
@@ -461,7 +461,7 @@ Find and replace text in a file using IntelliJ's Document API. Performs plain te
 
 **Returns**: `{ success, file, replacements, message }`
 
-### ide_edit_member (disabled by default, Java, Kotlin, Python, JS/TS)
+### ide_edit_member (disabled by default, Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
 Replace an entire member declaration (signature + body) with new content.
 
 | Parameter | Type | Required | Description |
@@ -477,7 +477,7 @@ Replace an entire member declaration (signature + body) with new content.
 
 **Returns**: `{ success, file, message, startLine, endLine }`
 
-### ide_insert_member (disabled by default, Java, Kotlin, Python, JS/TS)
+### ide_insert_member (disabled by default, Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
 Insert a new member at a structural position in a class or file.
 
 | Parameter | Type | Required | Description |
@@ -494,7 +494,7 @@ Insert a new member at a structural position in a class or file.
 
 **Returns**: `{ success, file, message, startLine, endLine }`
 
-### ide_replace_member (disabled by default, Java, Kotlin, Python, JS/TS)
+### ide_replace_member (disabled by default, Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
 Replace a method body or field initializer only, preserving the signature.
 
 | Parameter | Type | Required | Description |

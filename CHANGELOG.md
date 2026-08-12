@@ -11,6 +11,12 @@
 ### Changed
 - **`ide_refactor_safe_delete`** extended to universal tools with Python and JavaScript/TypeScript element type support.
 
+## [5.5.1] - 2026-08-12
+
+### Fixed
+
+- **Lifecycle manager no longer accumulates ghost entries for deleted project directories.** Temporary projects (worktrees, slots, ephemeral checkouts) that were opened and later deleted from disk remained in the managed projects registry forever. On startup, `loadState` now prunes any managed path whose directory no longer exists, preventing unbounded growth of the persisted state.
+
 ## [5.5.0] - 2026-08-09
 
 ### Added
@@ -1129,7 +1135,8 @@
 - **Runtime**: JVM 21
 - **Transport**: HTTP+SSE with JSON-RPC 2.0
 
-[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.5.0...HEAD
+[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.5.1...HEAD
+[5.5.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.5.0...v5.5.1
 [5.5.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.4.0...v5.5.0
 [5.4.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.3.1...v5.4.0
 [5.3.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.3.0...v5.3.1

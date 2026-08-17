@@ -103,7 +103,7 @@ class CreateModuleBehaviorTest : HeavyPlatformTestCase() {
         val roots = ModuleRootManager.getInstance(module!!).contentRoots
         assertTrue(
             "Content root should include the target directory",
-            roots.any { it.path == dir.absolutePath }
+            roots.any { it.path.replace('\\', '/') == dir.absolutePath.replace('\\', '/') }
         )
 
         val contentEntries = ModuleRootManager.getInstance(module).contentEntries

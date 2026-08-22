@@ -3,10 +3,15 @@ package com.github.hechtcarmel.jetbrainsindexmcpplugin.server.transport
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.McpConstants
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.mcp.McpServerFactory
 import com.intellij.openapi.diagnostic.logger
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingContext
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.sse.sse
 import io.modelcontextprotocol.kotlin.sdk.server.SseServerTransport
@@ -81,6 +86,15 @@ internal fun Route.legacySseRoutes(
     // would guess.
     post(McpConstants.MCP_ENDPOINT_PATH) { handleLegacyPost(factory, transports, scope) }
     post(McpConstants.SSE_ENDPOINT_PATH) { handleLegacyPost(factory, transports, scope) }
+
+    get(McpConstants.MCP_ENDPOINT_PATH) {
+        call.response.header(HttpHeaders.Allow, "POST")
+        call.respondText("Method Not Allowed", status = HttpStatusCode.MethodNotAllowed)
+    }
+    delete(McpConstants.MCP_ENDPOINT_PATH) {
+        call.response.header(HttpHeaders.Allow, "POST")
+        call.respondText("Method Not Allowed", status = HttpStatusCode.MethodNotAllowed)
+    }
 }
 
 private suspend fun RoutingContext.handleLegacyPost(
@@ -116,5 +130,6 @@ private suspend fun RoutingContext.handleStatelessPost(factory: McpServerFactory
     call.coroutineContext.job.invokeOnCompletion { scope.launch { server.close() } }
     server.createSession(transport)
 
-    transport.handleRequest(null, call)
+    val normalizedCall = call.withNormalizedMcpAccept()
+    transport.handleRequest(null, normalizedCall)
 }

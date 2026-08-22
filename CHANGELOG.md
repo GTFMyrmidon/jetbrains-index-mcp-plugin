@@ -10,6 +10,8 @@
 
 ### Changed
 - **`ide_refactor_safe_delete`** extended to universal tools with Python and JavaScript/TypeScript element type support.
+- **Streamable HTTP and stateless POST endpoints now accept standard HTTP clients without requiring dual MIME types.** Requests sending only `Accept: application/json`, `Accept: */*`, or omitting the `Accept` header are accepted instead of returning `406 Not Acceptable`.
+- **GET and DELETE requests to stateless endpoints return `405 Method Not Allowed` with `Allow: POST`** header instead of returning `406 Not Acceptable`, allowing clients like Cursor to properly probe for SSE streaming support and fall back to stateless JSON-RPC.
 
 ## [5.8.1] - 2026-08-22
 

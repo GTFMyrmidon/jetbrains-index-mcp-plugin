@@ -30,10 +30,7 @@ curl -s -X POST http://127.0.0.1:29170/index-mcp/streamable-http \
 
 Port 29170 is IntelliJ IDEA. Other IDEs: see `IdeProductInfo.kt` for the full map.
 
-**Both `Accept` values are required.** The Streamable HTTP spec mandates
-`Accept: application/json, text/event-stream`, and since 5.0.0 the server enforces it —
-`Accept: application/json` alone returns `406 Not Acceptable`. Real MCP clients already send
-both; only hand-written curl needs updating.
+**`Accept` headers**: `Accept: application/json` or `Accept: application/json, text/event-stream` are both supported on POST requests.
 
 ### The install-restart-verify cycle
 

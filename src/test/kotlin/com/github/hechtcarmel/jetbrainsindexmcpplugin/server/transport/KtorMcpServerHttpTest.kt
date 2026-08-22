@@ -190,6 +190,95 @@ class KtorMcpServerHttpTest : BasePlatformTestCase() {
         )
 
         assertEquals(HttpStatusCode.MethodNotAllowed.value, response.statusCode())
+        assertEquals("POST", response.headers().firstValue("Allow").orElse(null))
+    }
+
+    fun testStreamableGetReturnsMethodNotAllowedWithAllowHeader() {
+        val response = sendRequest(
+            method = "GET",
+            path = McpConstants.STREAMABLE_HTTP_ENDPOINT_PATH,
+            headers = mapOf("Accept" to "text/event-stream")
+        )
+
+        assertEquals(HttpStatusCode.MethodNotAllowed.value, response.statusCode())
+        assertEquals("POST", response.headers().firstValue("Allow").orElse(null))
+    }
+
+    fun testStreamablePostAcceptsOnlyApplicationJson() {
+        val response = sendRequest(
+            method = "POST",
+            path = McpConstants.STREAMABLE_HTTP_ENDPOINT_PATH,
+            body = """{"jsonrpc":"2.0","id":1,"method":"ping"}""",
+            headers = mapOf("Accept" to "application/json")
+        )
+
+        assertEquals(HttpStatusCode.OK.value, response.statusCode())
+        val responseBody = json.parseToJsonElement(response.body()).jsonObject
+        assertEquals("1", responseBody["id"]!!.jsonPrimitive.content)
+        assertNotNull(responseBody["result"])
+    }
+
+    fun testStreamablePostAcceptsWildcardAcceptHeader() {
+        val response = sendRequest(
+            method = "POST",
+            path = McpConstants.STREAMABLE_HTTP_ENDPOINT_PATH,
+            body = """{"jsonrpc":"2.0","id":1,"method":"ping"}""",
+            headers = mapOf("Accept" to "*/*")
+        )
+
+        assertEquals(HttpStatusCode.OK.value, response.statusCode())
+        val responseBody = json.parseToJsonElement(response.body()).jsonObject
+        assertEquals("1", responseBody["id"]!!.jsonPrimitive.content)
+        assertNotNull(responseBody["result"])
+    }
+
+    fun testStreamablePostAcceptsMissingAcceptHeader() {
+        val builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port${McpConstants.STREAMABLE_HTTP_ENDPOINT_PATH}"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("""{"jsonrpc":"2.0","id":1,"method":"ping"}"""))
+
+        val response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString())
+
+        assertEquals(HttpStatusCode.OK.value, response.statusCode())
+        val responseBody = json.parseToJsonElement(response.body()).jsonObject
+        assertEquals("1", responseBody["id"]!!.jsonPrimitive.content)
+        assertNotNull(responseBody["result"])
+    }
+
+    fun testStreamablePostRejectsIncompatibleAcceptHeader() {
+        val response = sendRequest(
+            method = "POST",
+            path = McpConstants.STREAMABLE_HTTP_ENDPOINT_PATH,
+            body = """{"jsonrpc":"2.0","id":1,"method":"ping"}""",
+            headers = mapOf("Accept" to "image/png")
+        )
+
+        assertEquals(HttpStatusCode.NotAcceptable.value, response.statusCode())
+    }
+
+    fun testLegacyGetEndpointReturnsMethodNotAllowedWithAllowHeader() {
+        val response = sendRequest(
+            method = "GET",
+            path = McpConstants.MCP_ENDPOINT_PATH,
+            headers = mapOf("Accept" to "text/event-stream")
+        )
+
+        assertEquals(HttpStatusCode.MethodNotAllowed.value, response.statusCode())
+        assertEquals("POST", response.headers().firstValue("Allow").orElse(null))
+    }
+
+    fun testLegacyPostAcceptsOnlyApplicationJson() {
+        val response = sendRequest(
+            method = "POST",
+            path = McpConstants.MCP_ENDPOINT_PATH,
+            body = """{"jsonrpc":"2.0","id":1,"method":"ping"}""",
+            headers = mapOf("Accept" to "application/json")
+        )
+
+        assertEquals(HttpStatusCode.OK.value, response.statusCode())
+        val responseBody = json.parseToJsonElement(response.body()).jsonObject
+        assertEquals("1", responseBody["id"]!!.jsonPrimitive.content)
+        assertNotNull(responseBody["result"])
     }
 
     fun testStreamableRequestSucceedsWithoutInitialize() {
@@ -318,7 +407,7 @@ class KtorMcpServerHttpTest : BasePlatformTestCase() {
         val builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path"))
             .header("Accept", "application/json, text/event-stream")
 
-        headers.forEach { (name, value) -> builder.header(name, value) }
+        headers.forEach { (name, value) -> builder.setHeader(name, value) }
 
         if (body != null) {
             builder.header("Content-Type", "application/json")

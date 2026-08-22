@@ -259,7 +259,7 @@ Each JetBrains IDE has a unique default port and server name to allow running mu
 
 ## Available Tools
 
-The plugin provides **51 MCP tools** organized by availability. Tools marked *(disabled by default)* can be enabled in <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP Server</kbd>.
+The plugin provides **52 MCP tools** organized by availability. Tools marked *(disabled by default)* can be enabled in <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP Server</kbd>.
 
 ### Universal Tools
 
@@ -267,17 +267,19 @@ These tools work in all supported JetBrains IDEs.
 
 | Tool | Description |
 |------|-------------|
-| `ide_find_references` | Find all references to a symbol across the entire project |
+| `ide_find_references` | Find all references to a symbol across the entire project, optionally restricted to path globs via `paths` |
 | `ide_find_definition` | Find the definition/declaration location of a symbol |
+| `ide_symbol_info` | Resolved signature and documentation for the symbol at a position — parameter and return types expanded to fully qualified names (Java), structured `parameters`, modifiers, containing declaration, and the doc comment as plain text, without reading the file *(disabled by default)* |
 | `ide_find_class` | Search for classes/interfaces by name with camelCase/substring/wildcard matching |
 | `ide_find_file` | Search for files by name using IDE's file index |
 | `ide_find_symbol` | Search for symbols (classes, methods, fields, functions) by name with IntelliJ Go to Symbol matching *(disabled by default)* |
-| `ide_search_text` | Text search using IntelliJ Find in Files with context filtering (substring and regex matching) |
+| `ide_search_text` | Text search using IntelliJ Find in Files with context filtering (substring and regex matching), optionally restricted to path globs via `paths` |
 | `ide_diagnostics` | Analyze file problems with fresh editor diagnostics for open files or public batch diagnostics for closed files, plus optional build/test results; intentions are best-effort |
 | `ide_project_diagnostics` | Batch/project-scope diagnostics for many files including unopened ones, with fail-closed coverage metadata: a `complete` flag plus per-file `analyzed`/`timed_out`/`failed`/`skipped`/`not_analyzed` states, so an empty result can never be mistaken for a clean project. Long analyses return an `analysisId` to poll *(disabled by default)* |
 | `ide_index_status` | Check if the IDE is in dumb mode or smart mode |
 | `ide_sync_files` | Force sync IDE's virtual file system and PSI cache with external file changes |
 | `ide_reload_project` | Force-reload Maven or Gradle build model after modifying `pom.xml`/`build.gradle` *(disabled by default)* |
+| `ide_link_build_system` | Link an unlinked Maven/Gradle project for dependency resolution *(disabled by default)* |
 | `ide_import_modules` | Import external Maven project directories as modules into the current IntelliJ window *(disabled by default, requires Maven plugin)* |
 | `ide_open_workspace` | Scan a root directory for Maven projects, or provide an explicit module list, and open them all in one IntelliJ window with full cross-project code intelligence *(disabled by default, requires Maven plugin)* |
 | `ide_build_project` | Build project using IDE's build system (JPS, Gradle, Maven) with structured errors. Long builds return a `buildId` to poll, so the MCP client's request timeout is never hit *(disabled by default)* |
@@ -295,8 +297,7 @@ These tools work in all supported JetBrains IDEs.
 | `ide_refactor_safe_delete` | Safely delete a symbol or file after checking for usages |
 | `ide_move_file` | Move a file to a new directory, applying language-aware reference/package updates when the IDE provides a semantic move backend |
 | `ide_reformat_code` | Reformat code using project code style with import optimization *(disabled by default)* |
-| `ide_optimize_imports` | Optimize imports without reformatting code *(disabled by default)* |
-| `ide_structural_search_replace` | Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine *(disabled by default)* |
+| `ide_structural_search_replace` | Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine, optionally restricted to path globs via `paths` (Java, Kotlin) *(disabled by default)* |
 | `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ — use instead of Write for source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`) *(disabled by default)* |
 | `ide_replace_text_in_file` | Find and replace text in a file using IntelliJ's Document API — changes immediately visible to index and PSI without `ide_sync_files` *(disabled by default)* |
 | `ide_change_signature` | Change method signature with automatic caller updates (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |

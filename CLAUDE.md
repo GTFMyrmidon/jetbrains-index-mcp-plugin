@@ -96,6 +96,9 @@ src/
 │   │   │   ├── ClassResolver.kt       # Class lookup by FQN (Java, PHP)
 │   │   │   ├── ProjectUtils.kt        # Project/workspace helpers
 │   │   │   ├── PsiUtils.kt            # PSI navigation helpers
+│   │   │   ├── SymbolSignature.kt     # Signature resolution strategy + result holder
+│   │   │   ├── JavaSignatureExtractor.kt # FQN-resolved signatures from Java PSI
+│   │   │   ├── SymbolDocumentation.kt # Quick-doc / doc-comment text as plain text
 │   │   │   └── ThreadingUtils.kt      # Threading utilities
 │   │   └── ui/                        # Tool window UI
 │   └── resources/
@@ -491,18 +494,20 @@ tests that could not fail:
 Tools are organized by IDE availability.
 
 **Universal Tools (All Supported JetBrains IDEs):**
-- `ide_find_references` - Find all usages of a symbol. Supports `language`+`symbol` as alternative to `file`+`line`+`column`. Includes generated sources by default (`includeGenerated: true`) so valid runtime references (Dagger/MapStruct/gRPC/serializers) aren't missed; set `includeGenerated: false` to drop generated DI factories/mappers/stubs when they dominate results.
+- `ide_find_references` - Find all usages of a symbol. Supports `language`+`symbol` as alternative to `file`+`line`+`column`. Includes generated sources by default (`includeGenerated: true`) so valid runtime references (Dagger/MapStruct/gRPC/serializers) aren't missed; set `includeGenerated: false` to drop generated DI factories/mappers/stubs when they dominate results. Optional `paths` restricts results to project-relative globs (`!` prefix excludes).
 - `ide_find_definition` - Find symbol definition location. Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
+- `ide_symbol_info` - Resolved signature and documentation for the symbol at a position, without reading the file. Java parameter/return types are expanded to fully qualified names with structured `parameters`; other languages fall back to the signature their own Quick Documentation renders. `signatureSource` reports which (`java_psi` / `quick_navigation` / `element_text`). Supports `language`+`symbol` as an alternative to `file`+`line`+`column`. (disabled by default)
 - `ide_find_class` - Search for classes/interfaces by name with camelCase/substring/wildcard matching
 - `ide_find_file` - Search for files by name using IDE's file index
 - `ide_find_symbol` - Search for symbols (classes, methods, fields, functions) by name with IntelliJ Go to Symbol matching (disabled by default)
-- `ide_search_text` - Text search using IntelliJ Find in Files with context filtering (substring matching for plain text, regex matching when enabled)
+- `ide_search_text` - Text search using IntelliJ Find in Files with context filtering (substring matching for plain text, regex matching when enabled). Optional `paths` restricts the search to project-relative globs (`!` prefix excludes)
 - `ide_read_file` - Read file content by path or qualified name, including library/jar sources (disabled by default)
-- `ide_diagnostics` - Unified diagnostics tool: per-file code analysis (errors, warnings, intentions), build output from last build, and test results from open test run tabs. Supports `includeBuildErrors`, `includeTestResults`, `severity` filter, `testResultFilter`, `maxBuildErrors`, `maxTestResults`. The `file` parameter is now optional. The result's `analysisMode` reports which path produced file problems: `open_daemon` or `closed_batch`.
+- `ide_diagnostics` - Unified diagnostics tool: per-file code analysis (errors, warnings, intentions), build output from last build, and test results from open test run tabs. Supports `includeBuildErrors`, `includeTestResults`, `severity` filter, `testResultFilter`, `maxBuildErrors`, `maxTestResults`. The `file` parameter is now optional. The result's `analysisMode` reports which path produced file problems: `open_daemon` or `closed_batch`. The analyzed file is refreshed from disk and committed to PSI first, so an out-of-band edit is analyzed as written without an `ide_sync_files` call.
 - `ide_project_diagnostics` - Batch/project-scope diagnostics for many files including unopened ones, with fail-closed coverage metadata (issue #246): every file in scope gets exactly one state (`analyzed`/`timed_out`/`failed`/`skipped`/`not_analyzed`) and `complete` is true only when every considered file was analyzed, so an empty problems list can never be mistaken for a clean project. Reuses the per-file analysis engine (open files get daemon highlights, closed files the public batch pass). Long analyses long-poll via `analysisId` (same pattern as `ide_build_project`); one analysis per project at a time. (disabled by default)
 - `ide_index_status` - Check indexing status (dumb/smart mode)
 - `ide_sync_files` - Force sync IDE's virtual file system and PSI cache with external file changes
 - `ide_reload_project` - Force-reload the project build model (Maven, Gradle, or both) after modifying build files. Equivalent to "Reload All Maven Projects" / "Reload Gradle Project" in the IDE. Async — returns immediately, resolution happens in background. (disabled by default)
+- `ide_link_build_system` - Link an unlinked Maven or Gradle project so the IDE resolves its dependencies. Use when `ide_reload_project` reports "not linked". Detects build system automatically from build files. Uses the platform's `ExternalSystemUnlinkedProjectAware` EP. (disabled by default)
 - `ide_import_modules` - Import external Maven project directories as modules into the current IntelliJ window for cross-project code intelligence and refactoring. Already imported module roots are skipped. Requires Maven plugin. (disabled by default)
 - `ide_open_workspace` - Scan a root directory for Maven projects and open them all in one IntelliJ window with full cross-project code intelligence, or provide an explicit list of Maven project paths via `modules`. `path` and `modules` are mutually exclusive; `modules` uses SHA-based caching. Creates a temporary aggregator POM with relative module paths. Requires Maven plugin. (disabled by default)
 - `ide_build_project` - Build project using IDE's build system (JPS, Gradle, Maven). Returns structured errors/warnings with file locations when available (null counts = no messages captured, not 0). Uses CompilationStatusListener for JPS builds and BuildProgressListener for Gradle/Maven builds. Supports workspace sub-project targeting via `project_path`. Each call blocks at most `waitSeconds` (default 45): a still-running call returns `{"status": "running", "buildId": ...}` and the agent polls with `buildId` while the build continues in the IDE. (disabled by default)
@@ -515,13 +520,13 @@ Tools are organized by IDE availability.
 - `ide_move_file` - Move a file to a new directory using the IDE's refactoring engine. Automatically updates all references, imports, and package declarations across the project. Supports automatic directory creation and optional reference update toggle.
 - `ide_reformat_code` - Reformat code using project code style (.editorconfig, IDE settings). Supports optional import optimization and code rearrangement. (disabled by default)
 - `ide_optimize_imports` - Optimize imports (remove unused, organize) without reformatting code. Equivalent to IDE's Ctrl+Alt+O. (disabled by default)
-- `ide_structural_search_replace` - Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine. Search-only when `replacePattern` is omitted. Any language with an IntelliJ structural search profile installed (e.g., Java, Kotlin, Python, JS/TS). (disabled by default)
+- `ide_structural_search_replace` - Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine. Search-only when `replacePattern` is omitted. Optional `paths` restricts matching (and rewriting) to project-relative globs (`!` prefix excludes). Java, Kotlin. (disabled by default)
 - `ide_get_active_file` - Get the currently active file(s) in the editor (disabled by default)
 - `ide_open_file` - Open a file in the editor with optional line/column navigation (disabled by default)
 - `ide_set_power_save_mode` - Enable/disable IDE Power Save Mode (IDE-wide). Suspends background inspections and code analysis while keeping the index and code intelligence operational (disabled by default)
 - `ide_close_project` - Close an open project window and free its memory. Non-blocking; refuses to close the last open project so the MCP server keeps a JSON-RPC context (disabled by default)
 - `ide_create_module` - Add a directory as an IntelliJ module with a content root, enabling code intelligence for non-Maven projects (TypeScript, plain directories, etc.). Supports optional directory exclusions. For Maven projects, use `ide_import_modules` instead. (disabled by default)
-- `ide_open_project` - Open a project by absolute path and wait until indexing completes (`timeoutSeconds`, default 600). Idempotent for already-open projects (disabled by default)
+- `ide_open_project` - Open a project by absolute path and wait until indexing completes (`timeoutSeconds`, default 600). Idempotent for already-open projects. Pass `autoLink: true` to automatically link an unlinked Maven/Gradle build system after opening. (disabled by default)
 - `ide_install_plugin` - Install a plugin zip into the IDE, replacing any existing version; auto-detects `build/distributions/*.zip` when no path is given (disabled by default)
 - `ide_restart` - Restart the IDE; terminates the MCP connection. Call after `ide_install_plugin` (disabled by default)
 

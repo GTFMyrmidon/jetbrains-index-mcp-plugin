@@ -70,6 +70,7 @@ Find all usages of a symbol (semantic, not text search).
 | `symbol` | string | conditional | Fully qualified symbol reference. Required for symbol-based lookup. |
 | `scope` | enum | no | One of `project_files` (default), `project_and_libraries`, `project_production_files`, `project_test_files` |
 | `includeGenerated` | boolean | no | Include references in generated sources (KSP/Dagger/annotation-processor output). **Default true** — keeps valid runtime references (Dagger/MapStruct/gRPC/serializers). Set false to drop generated call sites when they dominate results on injected symbols. |
+| `paths` | array | no | Project-relative path globs restricting results, e.g. `["src/main/**", "!**/generated/**"]`. `*` matches within a segment, `**` crosses directories, a plain directory includes everything beneath it, `!` excludes. Composes with `scope`. An include glob whose literal prefix does not exist (or resolves under a different relative name) errors instead of returning zero results. Include globs also drop library/jar hits under `project_and_libraries`; `\` separators are normalized to `/` |
 | `maxResults` | integer | no | Deprecated alias for `pageSize`. Default 100, max 500 |
 | `cursor` | string | no | Pagination cursor from a previous response. When provided, search parameters are ignored; `project_path` and `pageSize` may still be provided. |
 | `pageSize` | integer | no | Results per page. Default 100, max 500 |
@@ -98,6 +99,43 @@ Go to where a symbol is defined.
 
 **Returns**: `{ file, line, column, preview, symbolName, astPath }`
 Handles: packages, compiled classes, library sources (jar: URLs).
+
+### ide_symbol_info (disabled by default)
+Resolved signature and documentation of the symbol at a position — the declaration facts
+`ide_find_definition` cannot give, because its preview is source text with unresolved short type
+names and no doc comment.
+
+**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
+| `line` | integer | conditional | 1-based line. Required for position-based lookup. |
+| `column` | integer | conditional | 1-based column. Required for position-based lookup. |
+| `language` | string | conditional | Symbol language (e.g., `"Java"`). Required for symbol-based lookup. |
+| `symbol` | string | conditional | Fully qualified symbol reference. Required for symbol-based lookup. |
+| `includeDoc` | boolean | no | Include the rendered doc comment. Default true |
+| `maxDocLength` | integer | no | Truncate documentation beyond this many characters. Default 4000, max 20000 |
+| `project_path` | string | no | Project root path |
+
+**Returns**: `{ name, kind, qualifiedName, signature, signatureSource, parameters: [{name, type}], returnType, typeParameters, thrownTypes, modifiers, visibility, containingDeclaration, documentation, documentationTruncated, file, line, column, language }`
+
+**Type resolution**: `signatureSource` says how far the types were resolved.
+- `java_psi` — Java declarations. Parameter and return types are fully qualified
+  (`java.util.List<com.example.Request>`), and `parameters` / `returnType` are populated.
+- `quick_navigation` — any language with a documentation provider (Kotlin, Python, JS/TS, Go, PHP,
+  Rust). The signature is what that language's Quick Documentation renders; type names may be short
+  and the structured fields are absent.
+- `element_text` — no documentation provider answered; the declaration's own source line.
+
+**Overloads**: address them by position — each overload's own `line`/`column` selects it.
+
+**Chaining**: on the `java_psi` path `qualifiedName` is in this plugin's `symbol` format and can be
+passed straight to `ide_find_references`, `ide_call_hierarchy`, or `ide_find_implementations` as
+`symbol`. A callable includes its resolved parameter list (`com.example.Service#handle(com.example.Request)`),
+because the bare name is rejected as ambiguous once a method is overloaded. On the
+`quick_navigation` / `element_text` paths the container is a best-effort dotted AST path, not a
+resolved FQN, so it is descriptive rather than round-trippable — address those by position.
 
 ### ide_find_class
 Search for classes/interfaces by name using IDE's class index. Equivalent to Ctrl+N / Cmd+O.
@@ -145,6 +183,7 @@ Search for text using IntelliJ Find in Files. Plain-text queries do substring ma
 | `caseSensitive` | boolean | no | Default true |
 | `wholeWord` | boolean | no | Match whole words only. Default false (substring match) |
 | `filePattern` | string | no | IntelliJ file mask, e.g. `*.kt`, `*.java,!*Test.java` |
+| `paths` | array | no | Project-relative path globs restricting the search, e.g. `["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]`. `*` matches within a segment, `**` crosses directories, a plain directory includes everything beneath it, `!` excludes. Composes with `filePattern`. An include glob whose literal prefix does not exist (or resolves under a different relative name) errors instead of returning zero matches. Include globs also drop library/jar hits under `project_and_libraries`; `\` separators are normalized to `/` |
 | `limit` | integer | no | Deprecated alias for `pageSize`. Default 100, max 500 |
 | `cursor` | string | no | Pagination cursor from a previous response. When provided, search parameters are ignored; `project_path` and `pageSize` may still be provided. |
 | `pageSize` | integer | no | Results per page. Default 100, max 500 |
@@ -296,7 +335,7 @@ Get code diagnostics from multiple sources: per-file analysis (errors, warnings,
 | `project_path` | string | no | Project root path |
 
 **Returns**: `{ problems: [{message, severity, file, line, column, endLine?, endColumn?}], intentions: [{name, description}], problemCount, intentionCount, analysisFresh, analysisTimedOut, analysisMessage, buildErrors?, buildErrorCount?, buildWarningCount?, buildErrorsTruncated?, buildTimestamp?, testResults?, testResultsTruncated?, testSummary? }`
-**Notes**: Open files use fresh daemon highlights. Closed files use public batch analysis, so `WEAK_WARNING` results and quick-fix intentions may be less complete unless the file is already open in an editor. The `analysisMode` field reports which path ran: `open_daemon` or `closed_batch` (null when no analysis ran).
+**Notes**: Open files use fresh daemon highlights. Closed files use public batch analysis, so `WEAK_WARNING` results and quick-fix intentions may be less complete unless the file is already open in an editor. The `analysisMode` field reports which path ran: `open_daemon` or `closed_batch` (null when no analysis ran). The file is refreshed from disk before analysis, so no `ide_sync_files` call is needed after editing it with an external tool.
 **Severity levels**: `ERROR`, `WARNING`, `WEAK_WARNING`
 
 ### ide_project_diagnostics (disabled by default)
@@ -413,6 +452,7 @@ Pattern-based code search and transformation using IntelliJ's Structural Search 
 | `replacePattern` | string | no | Replacement pattern. Omit for search-only |
 | `filePattern` | string | no | IntelliJ file mask, e.g. `*.java`, `*.kt` |
 | `scope` | enum | no | One of `project_files` (default), `project_and_libraries`, `project_production_files`, `project_test_files` |
+| `paths` | array | no | Project-relative path globs restricting matching, e.g. `["src/main/**", "!**/generated/**"]`. `*` matches within a segment, `**` crosses directories, a plain directory includes everything beneath it, `!` excludes. In replace mode only files inside the globs are rewritten. An include glob whose literal prefix does not exist (or resolves under a different relative name) errors instead of returning zero matches. Include globs also drop library/jar hits under `project_and_libraries`; `\` separators are normalized to `/` |
 | `project_path` | string | no | Project root path |
 
 **Returns**: `{ matchCount, replacedCount, matches: [{ file, line, matchedText }] }`
@@ -588,6 +628,16 @@ Force-reload the project build model (Maven, Gradle, or both). Use after changin
 | `project_path` | string | no | Project root path |
 
 **Returns**: text summary of scheduled Maven/Gradle reloads or skipped unlinked build systems.
+
+### ide_link_build_system (disabled by default)
+Link an unlinked Maven or Gradle project so the IDE resolves its dependencies. Use when `ide_reload_project` reports "build file found but project is not linked". Detects the build system automatically from build files in the project directory.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | no | Absolute path of the project directory to link. Defaults to the resolved project's base path. |
+| `project_path` | string | no | Project root path |
+
+**Returns**: text confirming link status ("Maven project linked — dependency resolution scheduled.", "already linked", or error).
 
 ### ide_import_modules (disabled by default, Maven plugin only)
 Import one or more external Maven project directories as modules into the current IntelliJ project window. Already imported module roots are skipped.

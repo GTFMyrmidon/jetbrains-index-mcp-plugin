@@ -14,6 +14,7 @@ object ToolNames {
     const val FIND_FILE = "ide_find_file"
     const val SEARCH_TEXT = "ide_search_text"
     const val READ_FILE = "ide_read_file"
+    const val SYMBOL_INFO = "ide_symbol_info"
 
     // Intelligence tools
     const val DIAGNOSTICS = "ide_diagnostics"
@@ -25,6 +26,7 @@ object ToolNames {
     const val BUILD_PROJECT = "ide_build_project"
     const val CREATE_MODULE = "ide_create_module"
     const val IMPORT_MODULES = "ide_import_modules"
+    const val LINK_BUILD_SYSTEM = "ide_link_build_system"
     const val RELOAD_PROJECT = "ide_reload_project"
     const val LIST_TESTS = "ide_list_tests"
     const val RUN_TESTS = "ide_run_tests"
@@ -102,6 +104,7 @@ object ToolNames {
         INSERT_MEMBER,
         INSTALL_PLUGIN,
         LIFECYCLE_LOG,
+        LINK_BUILD_SYSTEM,
         LIST_TESTS,
         REFACTOR_MOVE,
         OPEN_FILE,
@@ -127,6 +130,7 @@ object ToolNames {
         SET_POWER_SAVE_MODE,
         SET_PROJECT_MODE,
         STRUCTURAL_SEARCH_REPLACE,
+        SYMBOL_INFO,
         SYNC_FILES,
         TYPE_HIERARCHY
     )

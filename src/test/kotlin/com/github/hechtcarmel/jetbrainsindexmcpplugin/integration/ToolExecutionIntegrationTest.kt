@@ -533,6 +533,7 @@ class ToolExecutionIntegrationTest : McpPlatformTestCase() {
             // Navigation tools
             ToolNames.FIND_REFERENCES,
             ToolNames.FIND_DEFINITION,
+            ToolNames.SYMBOL_INFO,
             ToolNames.TYPE_HIERARCHY,
             ToolNames.CALL_HIERARCHY,
             ToolNames.FIND_IMPLEMENTATIONS,
@@ -550,6 +551,7 @@ class ToolExecutionIntegrationTest : McpPlatformTestCase() {
             // Project tools
             ToolNames.BUILD_PROJECT,
             ToolNames.CREATE_MODULE,
+            ToolNames.LINK_BUILD_SYSTEM,
             ToolNames.INDEX_STATUS,
             ToolNames.SYNC_FILES,
             ToolNames.RUN_TESTS,

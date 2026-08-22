@@ -1,6 +1,6 @@
 # MCP tool manifest — golden snapshot
 # Regenerate: ./gradlew test -Ptier=unit --tests "*ToolManifestContractUnitTest" -Dcontract.update=true
-# tools: 49
+# tools: 51
 
 ## ide_build_project
 description:
@@ -372,7 +372,7 @@ description:
   
   At least one source must be active: provide 'file' for code analysis, 'includeBuildErrors' for build output, or 'includeTestResults' for test results. Can combine all three.
   
-  File analysis uses fresh daemon highlights for files that are already open in an editor. Closed files use public batch analysis, so weak warnings and quick-fix intentions may be less complete unless the file is open. For diagnostics across many files or the whole project with per-file coverage metadata, use ide_project_diagnostics.
+  File analysis uses fresh daemon highlights for files that are already open in an editor. Closed files use public batch analysis, so weak warnings and quick-fix intentions may be less complete unless the file is open. The analyzed file is re-read from disk first, so results reflect edits made outside the IDE without calling ide_sync_files. For diagnostics across many files or the whole project with per-file coverage metadata, use ide_project_diagnostics.
   
   Parameters: file (optional, enables code analysis), line + column (optional, for intentions, requires file), startLine/endLine (optional, requires file), includeBuildErrors (optional), includeTestResults (optional), severity (optional, default 'all'), testResultFilter (optional, default 'failed'), maxBuildErrors (optional, default 100), maxTestResults (optional, default 100).
   
@@ -902,9 +902,10 @@ description:
   - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript; necessary for fresh search, ignored when cursor is provided)
   - cursor: pagination cursor from a previous response
   
-  Parameters: scope (optional, default: "project_files"; supported: project_files, project_and_libraries, project_production_files, project_test_files), pageSize (optional, default: 100, max: 500).
+  Parameters: scope (optional, default: "project_files"; supported: project_files, project_and_libraries, project_production_files, project_test_files), paths (optional array of project-relative globs restricting results, '!' prefix excludes), pageSize (optional, default: 100, max: 500).
   
   Example: {"file": "src/UserService.java", "line": 25, "column": 18}
+  Example: {"file": "src/UserService.java", "line": 25, "column": 18, "paths": ["src/main/**", "!**/generated/**"]}
   Example: {"language": "Java", "symbol": "com.example.UserService#findUser(String)", "scope": "project_and_libraries"}
   Example: {"language": "TypeScript", "symbol": "src/api#default"}
   Example: {"language": "PHP", "symbol": "\\App\\Service\\UserService::find()"}
@@ -958,6 +959,16 @@ schema:
       {
         "description": "Results per page. Default: 100, max: 500.",
         "type": "integer"
+      },
+      "paths":
+      {
+        "description": "Project-relative path globs restricting the search, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' matches within a path segment, '**' crosses directories, a plain directory path includes everything beneath it, and a leading '!' excludes. Includes are unioned, then excludes are subtracted; with only excludes, everything else is searched. Combines with the tool's other filters (scope, filePattern). Because globs are project-relative, any include glob also drops results that have no project-relative path — library and jar hits under scope project_and_libraries; an exclude-only filter leaves those alone. An include glob whose literal directory prefix does not exist in the project, or resolves under a different relative name than it was written with, is reported as an error.",
+        "items":
+        {
+          "type": "string"
+        },
+        "minItems": 1,
+        "type": "array"
       },
       "project_path":
       {
@@ -1348,6 +1359,60 @@ schema:
     "type": "object"
   }
 
+## ide_link_build_system
+description:
+  Link an unlinked Maven or Gradle project so the IDE resolves its dependencies.
+  
+  Use this when ide_reload_project reports "build file found on disk but project
+  is not linked" — this tool does the equivalent of clicking "Load Maven/Gradle
+  Project" in the IDE notification bar.
+  
+  Detects the build system automatically from build files in the project directory.
+  If the project is already linked, returns successfully without re-linking.
+  If neither Maven nor Gradle plugin is available, reports which plugins are missing.
+  
+  Two modes:
+  - Start: provide path (or omit to use current project). If the link completes within
+    waitSeconds, returns the result directly. Otherwise returns {"status": "running",
+    "linkId": ...} — call again with that linkId to poll.
+  - Poll: provide linkId from a previous call.
+  
+  Parameters:
+  - path (optional): absolute path of the project directory to link. Defaults to the resolved project's base path.
+  - linkId (optional): poll a link operation started by a previous call. Mutually exclusive with path.
+  - waitSeconds (optional): max seconds to wait per call. Default: 45, max: 55.
+  - project_path (optional): selects the project when multiple are open.
+  
+  Example: { "path": "/Users/dev/myproject" }
+  Example: { "linkId": "abc123" }
+schema:
+  {
+    "properties":
+    {
+      "linkId":
+      {
+        "description": "Poll a link operation started by a previous call.",
+        "type": "string"
+      },
+      "path":
+      {
+        "description": "Absolute path of the project directory to link. Defaults to the resolved project's base path.",
+        "type": "string"
+      },
+      "project_path":
+      {
+        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "type": "string"
+      },
+      "waitSeconds":
+      {
+        "description": "Max seconds to wait per call. Default: 45, max: 55.",
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  }
+
 ## ide_list_tests
 description:
   List all test methods discovered by the IDE's test framework extension points (JUnit, TestNG, etc.).
@@ -1486,14 +1551,20 @@ description:
   
   Parameters:
   - path: absolute filesystem path of the project directory to open (required)
+  - autoLink (optional): when true, automatically link an unlinked Maven/Gradle build system after opening. Default: false.
   - timeoutSeconds (optional): maximum seconds to wait for opening + indexing. Default: 600.
   - project_path (optional): selects the JSON-RPC context project when multiple are open
   
-  Example: { "path": "/Users/dev/myproject" }
+  Example: { "path": "/Users/dev/myproject", "autoLink": true }
 schema:
   {
     "properties":
     {
+      "autoLink":
+      {
+        "description": "Automatically link an unlinked Maven/Gradle build system after opening. Default: false.",
+        "type": "boolean"
+      },
       "path":
       {
         "description": "Absolute filesystem path of the project directory to open.",
@@ -2274,13 +2345,14 @@ description:
   
   Context filtering: search only in code, comments, or string literals.
   File filtering: pass filePattern with an IntelliJ file mask such as "*.kt" or "*.java,!*Test.java".
+  Path filtering: pass paths with project-relative globs to search only under given directories ('!' prefix excludes).
   
   Returns: matching locations with file, line, column, context snippet, and context type.
   
   Supports pagination: first call returns results + nextCursor. Pass cursor to get the next page.
-  Parameters: query (required for fresh search), regex (optional, default: false), context (optional: "code", "comments", "strings", "all"), filePattern (optional IntelliJ file mask), caseSensitive (optional, default: true), wholeWord (optional, default: false), pageSize (optional, default: 100, max: 500), cursor (for pagination, replaces search params; project_path may still be required).
+  Parameters: query (required for fresh search), regex (optional, default: false), context (optional: "code", "comments", "strings", "all"), filePattern (optional IntelliJ file mask), paths (optional array of project-relative globs, '!' prefix excludes), caseSensitive (optional, default: true), wholeWord (optional, default: false), pageSize (optional, default: 100, max: 500), cursor (for pagination, replaces search params; project_path may still be required).
   
-  Example: {"query": "ConfigManager"} or {"query": "TODO", "context": "comments", "filePattern": "*.kt"} or {"query": "Runtime\\.getRuntime\\(\\)\\.exec\\(", "regex": true, "filePattern": "*.java"}
+  Example: {"query": "ConfigManager"} or {"query": "TODO", "context": "comments", "filePattern": "*.kt"} or {"query": "createScope", "paths": ["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]}
 schema:
   {
     "properties":
@@ -2321,6 +2393,16 @@ schema:
       {
         "description": "Results per page. Default: 100, max: 500.",
         "type": "integer"
+      },
+      "paths":
+      {
+        "description": "Project-relative path globs restricting the search, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' matches within a path segment, '**' crosses directories, a plain directory path includes everything beneath it, and a leading '!' excludes. Includes are unioned, then excludes are subtracted; with only excludes, everything else is searched. Combines with the tool's other filters (scope, filePattern). Because globs are project-relative, any include glob also drops results that have no project-relative path — library and jar hits under scope project_and_libraries; an exclude-only filter leaves those alone. An include glob whose literal directory prefix does not exist in the project, or resolves under a different relative name than it was written with, is reported as an error.",
+        "items":
+        {
+          "type": "string"
+        },
+        "minItems": 1,
+        "type": "array"
       },
       "project_path":
       {
@@ -2527,10 +2609,12 @@ description:
   
   Search-only mode (no replacePattern): returns all matches with file locations.
   Replace mode: applies the replacement pattern to all matches and returns the count.
+  Pass paths with project-relative globs ('!' prefix excludes) to restrict matching to given directories.
   
   Examples:
   - Search: {"searchPattern": "System.out.println($arg$)"}
   - Replace: {"searchPattern": "new Sync($fn$)", "replacePattern": "new Sync<>(Map.class, $fn$)", "filePattern": "*.java"}
+  - Scoped: {"searchPattern": "System.out.println($arg$)", "paths": ["src/main/**", "!**/generated/**"]}
 schema:
   {
     "properties":
@@ -2539,6 +2623,16 @@ schema:
       {
         "description": "File mask filter (e.g., '*.java', '*.kt'). Default: '*.java'.",
         "type": "string"
+      },
+      "paths":
+      {
+        "description": "Project-relative path globs restricting the search, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' matches within a path segment, '**' crosses directories, a plain directory path includes everything beneath it, and a leading '!' excludes. Includes are unioned, then excludes are subtracted; with only excludes, everything else is searched. Combines with the tool's other filters (scope, filePattern). Because globs are project-relative, any include glob also drops results that have no project-relative path — library and jar hits under scope project_and_libraries; an exclude-only filter leaves those alone. An include glob whose literal directory prefix does not exist in the project, or resolves under a different relative name than it was written with, is reported as an error.",
+        "items":
+        {
+          "type": "string"
+        },
+        "minItems": 1,
+        "type": "array"
       },
       "project_path":
       {
@@ -2572,6 +2666,78 @@ schema:
     [
       "searchPattern"
     ],
+    "type": "object"
+  }
+
+## ide_symbol_info
+description:
+  Get the resolved signature and documentation of the symbol at a position, without reading the file. Use before changing a call site, picking an overload, or checking what a parameter actually accepts.
+  
+  Returns: name, kind, qualified name, resolved signature, structured parameters (name + type), return type, modifiers, visibility, containing declaration, the doc comment as plain text, and the declaration's file/line/column.
+  
+  Type resolution: for Java, every parameter and return type is expanded to its fully qualified name — `java.util.List<com.example.model.Request>` for a parameter written as `List<Request>`. Other languages fall back to the signature their own Quick Documentation renders, where type names may stay short. The `signatureSource` field reports which happened: `java_psi` (fully resolved, with structured `parameters`), `quick_navigation` (IDE-rendered), or `element_text` (raw declaration line, when no documentation provider answers).
+  
+  Prefer this over ide_find_definition + reading the file when you only need the signature or the docs.
+  
+  Target (mutually exclusive):
+  - file + line + column: position-based lookup, so overloads are addressable
+  - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript)
+  
+  Example: {"file": "src/Main.java", "line": 15, "column": 10}
+  Example: {"language": "Java", "symbol": "com.example.MyClass#processData(String)"}
+  Example: {"file": "src/Main.java", "line": 15, "column": 10, "includeDoc": false}
+schema:
+  {
+    "properties":
+    {
+      "column":
+      {
+        "description": "1-based column number",
+        "type": "integer"
+      },
+      "file":
+      {
+        "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin. Required for position-based lookup.",
+        "type": "string"
+      },
+      "includeDoc":
+      {
+        "description": "Include the rendered doc comment. Set false when only the signature is needed. Optional, defaults to true.",
+        "type": "boolean"
+      },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
+        "type": "string"
+      },
+      "line":
+      {
+        "description": "1-based line number",
+        "type": "integer"
+      },
+      "maxDocLength":
+      {
+        "description": "Maximum characters of documentation to return; longer docs are truncated and documentationTruncated is set. Default: 4000, max: 20000.",
+        "type": "integer"
+      },
+      "project_path":
+      {
+        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "type": "string"
+      },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      }
+    },
     "type": "object"
   }
 

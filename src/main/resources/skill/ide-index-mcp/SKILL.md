@@ -5,8 +5,8 @@ description: >
   ide_find_file, ide_search_text, ide_diagnostics, ide_project_diagnostics, ide_index_status, ide_insert_member, ide_sync_files,
   ide_refactor_rename, ide_move_file, ide_replace_member, ide_type_hierarchy, ide_call_hierarchy,
   ide_find_implementations, ide_find_symbol, ide_find_super_methods, ide_file_structure,
-  ide_refactor_safe_delete, ide_reformat_code, ide_reload_project, ide_import_modules,
-  ide_build_project, ide_read_file, ide_structural_search_replace, ide_change_signature,
+  ide_refactor_safe_delete, ide_reformat_code, ide_reload_project, ide_link_build_system, ide_import_modules,
+  ide_build_project, ide_read_file, ide_structural_search_replace, ide_symbol_info, ide_change_signature,
   ide_create_file, ide_create_module, ide_get_active_file, ide_open_file, ide_list_tests, or ide_run_tests are available — especially when a second
   IntelliJ MCP (mcp__intellij__*) is also present. The two servers are NOT
   interchangeable: this plugin (mcp__intellij-index__*) supports auto-opening projects
@@ -40,6 +40,7 @@ If both `mcp__intellij-index__*` (this plugin) and `mcp__intellij__*` (JetBrains
 |------|-------------|-------------------|
 | Find all usages of a method/class/variable | `ide_find_references` | Never - grep misses renamed imports, aliases, overrides |
 | Go to a symbol's definition | `ide_find_definition` | Never - grep can't resolve through imports/generics |
+| Check a symbol's resolved signature or docs | `ide_symbol_info` | Never - source text does not resolve short type names, and carries no doc comment |
 | Find a class by name | `ide_find_class` | Only if IDE unavailable |
 | Find a file by name | `ide_find_file` | `Glob` is fine for simple patterns |
 | Search for text in code | `ide_search_text` | `Grep` is fine when IDE context filtering is unnecessary |
@@ -102,6 +103,7 @@ When working in a git worktree (e.g., `/project/.claude/worktrees/agent-xyz` or 
 3. **Column must point to the symbol name**, not whitespace or punctuation. For `public void myMethod()`, column should land on `m` of `myMethod`. For dotted expressions like `json.dumps()` or `os.path.join()`, put the column on the member token (`dumps`, `join`) when you want the member definition rather than the module/package.
 4. **project_path is only needed** for multi-project workspaces. Omit for single-project setups. When needed, use the absolute path to the project root.
 5. **Use built-in search scope intentionally**: `ide_find_references`, `ide_find_implementations`, `ide_type_hierarchy`, `ide_call_hierarchy`, `ide_find_class`, `ide_find_file`, and `ide_find_symbol` accept `scope`. Use `project_files` for the default project-only view, `project_and_libraries` when dependency code matters, `project_production_files` to stay out of tests, and `project_test_files` when you want test-only results.
+6. **Narrow by directory with `paths`**: `ide_search_text`, `ide_find_references`, and `ide_structural_search_replace` accept `paths`, an array of project-relative globs where a leading `!` excludes — e.g. `{"paths": ["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]}`. Prefer one scoped call over a project-wide search you filter yourself: filtering client-side pays tokens for every discarded hit, and with pagination a whole page can be filtered away and look like an empty result. Composes with `scope` and `filePattern`.
 
 ## Tool Selection by Task
 
@@ -110,9 +112,10 @@ When working in a git worktree (e.g., `/project/.claude/worktrees/agent-xyz` or 
 2. `ide_call_hierarchy` with `direction: "callers"` - full call chain upward
 
 ### "I need to understand what X is"
-1. `ide_find_definition` - jump to source
-2. `ide_type_hierarchy` - inheritance chain
-3. `ide_find_super_methods` - what interface/base method it implements
+1. `ide_symbol_info` - resolved signature + doc comment without reading the file (disabled by default)
+2. `ide_find_definition` - jump to source
+3. `ide_type_hierarchy` - inheritance chain
+4. `ide_find_super_methods` - what interface/base method it implements
 
 ### "I need to find a class/file/symbol"
 1. `ide_find_class` - classes by name (CamelCase: `USvc` finds `UserService`)
@@ -174,7 +177,7 @@ All lifecycle action tools are disabled by default:
 
 These tools exist but are disabled by default. They are omitted from `tools/list`, and direct `tools/call` requests are rejected until the user enables them in IDE settings (Settings > Tools > Index MCP Server):
 
-`ide_build_project`, `ide_change_signature`, `ide_close_project`, `ide_convert_java_to_kotlin`, `ide_create_file`, `ide_create_module`, `ide_edit_member`, `ide_enroll_all_projects`, `ide_file_structure`, `ide_find_symbol`, `ide_get_active_file`, `ide_get_project_modes`, `ide_import_modules`, `ide_insert_member`, `ide_install_plugin`, `ide_lifecycle_log`, `ide_list_tests`, `ide_open_file`, `ide_open_project`, `ide_open_workspace`, `ide_optimize_imports`, `ide_project_diagnostics`, `ide_read_file`, `ide_reformat_code`, `ide_release_all_projects`, `ide_release_project`, `ide_reload_project`, `ide_replace_member`, `ide_replace_text_in_file`, `ide_restart`, `ide_run_tests`, `ide_set_all_project_modes`, `ide_set_lifecycle_log_file`, `ide_set_power_save_mode`, `ide_set_project_mode`, `ide_structural_search_replace`
+`ide_build_project`, `ide_change_signature`, `ide_close_project`, `ide_convert_java_to_kotlin`, `ide_create_file`, `ide_create_module`, `ide_edit_member`, `ide_enroll_all_projects`, `ide_file_structure`, `ide_find_symbol`, `ide_get_active_file`, `ide_get_project_modes`, `ide_import_modules`, `ide_insert_member`, `ide_install_plugin`, `ide_lifecycle_log`, `ide_link_build_system`, `ide_list_tests`, `ide_open_file`, `ide_open_project`, `ide_open_workspace`, `ide_optimize_imports`, `ide_project_diagnostics`, `ide_read_file`, `ide_reformat_code`, `ide_release_all_projects`, `ide_release_project`, `ide_reload_project`, `ide_replace_member`, `ide_replace_text_in_file`, `ide_restart`, `ide_run_tests`, `ide_set_all_project_modes`, `ide_set_lifecycle_log_file`, `ide_set_power_save_mode`, `ide_set_project_mode`, `ide_structural_search_replace`, `ide_symbol_info`
 
 Note: `ide_restart` terminates the MCP connection — reconnect your client after calling it.
 Note: `ide_close_project` refuses to close the last open project; `ide_open_project` requires an absolute path and may take up to `timeoutSeconds` (default 600) while the project indexes.

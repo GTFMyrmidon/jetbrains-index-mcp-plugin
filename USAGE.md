@@ -14,6 +14,7 @@ These tools work in every supported JetBrains IDE:
 |------|-------------|---------|
 | `ide_find_references` | Find all references to a symbol | Enabled |
 | `ide_find_definition` | Find symbol definition location | Enabled |
+| `ide_symbol_info` | Resolved signature + docs for the symbol at a position, without reading the file | Disabled |
 | `ide_find_class` | Search classes/interfaces by name | Enabled |
 | `ide_find_file` | Search files by name | Enabled |
 | `ide_find_symbol` | Search code symbols by name *(disabled by default)* | Disabled |
@@ -97,6 +98,7 @@ see [Claude Code Hooks](docs/claude-code-hooks.md) for ready-to-use `PreToolUse`
 - [Universal Tools](#universal-tools)
   - [ide_find_references](#ide_find_references)
   - [ide_find_definition](#ide_find_definition)
+  - [ide_symbol_info](#ide_symbol_info)
   - [ide_find_class](#ide_find_class)
   - [ide_find_file](#ide_find_file)
   - [ide_search_text](#ide_search_text)
@@ -257,6 +259,7 @@ Finds all references to a symbol across the entire project using IntelliJ's sema
 | `symbol` | string | Conditional | Fully qualified symbol reference. Required for symbol-based lookup. |
 | `scope` | string | No | Built-in search scope. One of `project_files` (default), `project_and_libraries`, `project_production_files`, `project_test_files` |
 | `includeGenerated` | boolean | No | Include references in generated sources (KSP/Dagger/annotation-processor output). **Default: true** — keeps valid runtime references from generated DI factories, MapStruct mappers, gRPC stubs, and serializers. Set `false` to drop generated call sites when they dominate results. |
+| `paths` | array | No | Project-relative path globs restricting results, e.g. `["src/main/**", "!**/generated/**"]`. `*` matches within a path segment, `**` crosses directories, a plain directory path includes everything beneath it, and a leading `!` excludes. Includes are unioned, then excludes subtracted; with only excludes, everything else is searched. Composes with `scope`. An include glob whose literal directory prefix does not exist — or resolves under a different relative name than written — fails with an error instead of returning zero results. Because globs are project-relative, an include glob also drops library/jar hits under `project_and_libraries`; an exclude-only filter leaves them. Windows-style `\` separators are normalized to `/`. |
 | `maxResults` | integer | No | Deprecated alias for `pageSize` (default: 100, max: 500) |
 | `cursor` | string | No | Pagination cursor from a previous response |
 | `pageSize` | integer | No | Number of results per page (default: 100, max: 500) |
@@ -406,6 +409,94 @@ Finds the definition/declaration location of a symbol at a given source location
 
 ---
 
+### ide_symbol_info
+
+Returns the resolved signature and documentation of the symbol at a position, so a signature check
+does not cost a whole-file read.
+
+**Use when:**
+- Checking whether a call site is compatible before changing it
+- Picking between overloads
+- Reading a declaration's doc comment without opening the declaring file
+
+**How it differs from `ide_find_definition`:** that tool returns *source text* — parameter types
+appear as the short names the author imported, and no doc comment is included. This tool returns
+types as the IDE resolved them.
+
+**Type resolution by language:**
+
+| `signatureSource` | When | Type names |
+|-------------------|------|------------|
+| `java_psi` | Java declarations (and Kotlin light elements) | Fully qualified, plus structured `parameters` and `returnType` |
+| `quick_navigation` | Any language with a documentation provider — Kotlin, Python, JS/TS, Go, PHP, Rust | As that language's Quick Documentation renders them; often short |
+| `element_text` | No documentation provider answered | The declaration's own source line |
+
+**Target (mutually exclusive):** `file` + `line` + `column` OR `language` + `symbol`
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file` | string | Conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
+| `line` | integer | Conditional | 1-based line number. Required for position-based lookup. |
+| `column` | integer | Conditional | 1-based column number. Required for position-based lookup. |
+| `language` | string | Conditional | Language of the symbol (e.g., `"Java"`). Required for symbol-based lookup. |
+| `symbol` | string | Conditional | Fully qualified symbol reference. Required for symbol-based lookup. |
+| `includeDoc` | boolean | No | Include the rendered doc comment (default: true) |
+| `maxDocLength` | integer | No | Truncate documentation beyond this many characters (default: 4000, max: 20000) |
+| `project_path` | string | No | Project root path |
+
+**Example Request:**
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "ide_symbol_info",
+    "arguments": {
+      "file": "src/main/java/com/example/UserService.java",
+      "line": 15,
+      "column": 17
+    }
+  }
+}
+```
+
+**Example Response:**
+
+```json
+{
+  "name": "findUser",
+  "kind": "method",
+  "qualifiedName": "com.example.UserService#findUser(java.lang.String)",
+  "signature": "public com.example.model.User findUser(java.lang.String id) throws com.example.NotFoundException",
+  "signatureSource": "java_psi",
+  "parameters": [
+    { "name": "id", "type": "java.lang.String" }
+  ],
+  "returnType": "com.example.model.User",
+  "thrownTypes": ["com.example.NotFoundException"],
+  "modifiers": ["public"],
+  "visibility": "public",
+  "containingDeclaration": "com.example.UserService",
+  "documentation": "Looks up a user by id.\n\nParams:\nid - the user id\nReturns:\nthe user, never null",
+  "documentationTruncated": false,
+  "file": "src/main/java/com/example/UserService.java",
+  "line": 15,
+  "column": 35,
+  "language": "Java"
+}
+```
+
+**Note:** on the `java_psi` path `qualifiedName` uses this plugin's `symbol` format, so it can be
+passed straight back to `ide_find_references`, `ide_call_hierarchy`, or `ide_find_implementations`
+as the `symbol` argument. A callable includes its resolved parameter list, because the bare
+`Container#name` form is rejected as ambiguous as soon as the method is overloaded. On the other
+`signatureSource` paths the container is a best-effort dotted AST path rather than a resolved FQN,
+so address those symbols by position instead.
+
+---
+
 ### ide_find_class
 
 Searches for classes and interfaces by name using the IDE's class index.
@@ -547,6 +638,7 @@ Searches for text using IntelliJ's Find in Files engine, matching the IDE's own 
 | `caseSensitive` | boolean | No | Case sensitive search (default: true) |
 | `wholeWord` | boolean | No | Match whole words only (default: false — substring match) |
 | `filePattern` | string | No | IntelliJ file mask to filter files by name (e.g., `"*.kt"`, `"*.gradle.kts"`, `"*.java,!*Test.java"`) |
+| `paths` | array | No | Project-relative path globs restricting the search, e.g. `["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]`. `*` matches within a path segment, `**` crosses directories, a plain directory path includes everything beneath it, and a leading `!` excludes. Includes are unioned, then excludes subtracted; with only excludes, everything else is searched. Composes with `filePattern`. An include glob whose literal directory prefix does not exist — or resolves under a different relative name than written — fails with an error instead of returning zero matches. Because globs are project-relative, an include glob also drops library/jar hits under `project_and_libraries`; an exclude-only filter leaves them. Windows-style `\` separators are normalized to `/`. |
 | `limit` | integer | No | Deprecated alias for `pageSize` (default: 100, max: 500) |
 | `cursor` | string | No | Pagination cursor from a previous response |
 | `pageSize` | integer | No | Number of results per page (default: 100, max: 500) |
@@ -701,6 +793,7 @@ File problems are collected through explicit daemon analysis, so they do not dep
 - `analysisTimedOut = true` means the file analysis budget was exceeded; build/test sections may still be returned.
 - `analysisMessage` explains degraded cases such as timeouts or missing live editor context for intentions.
 - `analysisMode` reports which analysis path produced the file problems: `open_daemon` (file open in an editor, fresh daemon highlights) or `closed_batch` (public batch analysis); `null` when no analysis ran.
+- The analyzed file is refreshed from disk and committed to PSI before analysis, so problems describe the file as it is on disk. There is no need to call `ide_sync_files` first after editing a file with an external tool.
 - `line` and `column` affect intention lookup only; file problems are collected for the whole file, then filtered by `startLine` / `endLine` if provided.
 
 **Severity Values:**
@@ -917,6 +1010,29 @@ Use this after modifying `pom.xml`, `build.gradle`, `build.gradle.kts`, `setting
 
 ```
 Build model reload scheduled for Maven in 'engine'. IntelliJ is resolving dependencies in the background.
+```
+
+---
+
+### ide_link_build_system
+
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+
+Link an unlinked Maven or Gradle project so the IDE resolves its dependencies. Use when `ide_reload_project` reports "build file found on disk but project is not linked" — this tool does the equivalent of clicking "Load Maven/Gradle Project" in the IDE notification bar.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | No | Absolute path of the project directory to link. Defaults to the resolved project's base path. |
+| `project_path` | string | No | Selects the project when multiple are open. |
+
+**Example request:**
+```json
+{ "path": "/Users/dev/myproject" }
+```
+
+**Example response:**
+```json
+"Maven project linked — dependency resolution scheduled."
 ```
 
 ---
@@ -1962,6 +2078,7 @@ When `replacePattern` is omitted, the tool performs search-only and returns matc
 | `replacePattern` | string | No | Replacement pattern. If omitted, search-only mode |
 | `filePattern` | string | No | IntelliJ file mask to filter files (e.g., `"*.java"`, `"*.kt"`). Default: `"*.java"` |
 | `scope` | string | No | Built-in search scope. One of `project_files` (default), `project_and_libraries`, `project_production_files`, `project_test_files` |
+| `paths` | array | No | Project-relative path globs restricting matching, e.g. `["src/main/**", "!**/generated/**"]`. `*` matches within a path segment, `**` crosses directories, a plain directory path includes everything beneath it, and a leading `!` excludes. Includes are unioned, then excludes subtracted; with only excludes, everything else is searched. Composes with `scope` and `filePattern`. An include glob whose literal directory prefix does not exist — or resolves under a different relative name than written — fails with an error instead of returning zero matches. Because globs are project-relative, an include glob also drops library/jar hits under `project_and_libraries`; an exclude-only filter leaves them. Windows-style `\` separators are normalized to `/`. |
 
 **Example Request (search-only):**
 

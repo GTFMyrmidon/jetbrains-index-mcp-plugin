@@ -454,11 +454,34 @@ call sites". It is thin in these areas:
   are reached only through reflection against plugins absent from the test classpath. The Python
   hierarchy and call-hierarchy handlers have no automated coverage at all — verify changes to them
   in the corresponding IDE by hand.
+- **No test exercises real Kotlin PSI.** The Kotlin plugin is not on the test classpath, so every
+  Kotlin-specific code path — light-class handling in `JavaHandlers.kt`, `KtProperty` resolution in
+  `JavaSymbolReferenceHandler`, the Kotlin branches of the refactoring tools — is covered only by
+  unit tests over the surrounding helpers, or not at all. Verify Kotlin changes by hand in the IDE.
+  Two routes have been tried and both are closed:
+  - `testBundledPlugin("org.jetbrains.kotlin")` fails `compileTestKotlin`. The bundled plugin's jars
+    carry newer Kotlin metadata than the generation this platform build compiles against — the same
+    pin documented in `gradle/libs.versions.toml` and in `docs/mcp-kotlin-sdk-migration.md` §11.1.
+  - Filtering those jars off the `compileTestKotlin` classpath does compile, and the plugin loads
+    (`PluginDetectors.kotlin.isAvailable` is true, fixtures parse to real Kotlin PSI). But a real
+    `ReferencesSearch` then dies inside the platform's `KotlinReferencesSearcher` with
+    `NoSuchMethodError: SequencesKt.sequenceOf`, via `LightClassUtil.getWrappingClasses`. A real IDE
+    loads bundled plugins through isolated per-plugin classloaders with matched dependencies; a
+    Gradle test JVM flattens them onto one classpath.
 - **Some tools are still never executed by any test**, only schema- and response-shape-checked:
   `ide_build_project`, `ide_reload_project`, `ide_import_modules`, `ide_open_workspace`,
   `ide_restart`, `ide_lifecycle_log`, `ide_set_lifecycle_log_file`, and `ide_run_tests` (only its
   `parseTarget` helper is covered). `ide_reformat_code` has error paths only. Adding a behavior
   test for one is a genuinely useful first contribution — see the checklist above for the shape.
+- **`ide_symbol_info` is tested only on its `java_psi` tier.** The `quick_navigation` and
+  `element_text` fallbacks in `SymbolSignatureResolver` have no automated coverage. A TypeScript
+  fixture does reach `quick_navigation`, but adding one made a JS/TS background task throw on an
+  application pooled thread during teardown — `BackendThreadPoolExecutor.afterExecute` logged it
+  and `TestLoggerFactory$TestLogger.error` then failed inside `AsyncLog`. The build stayed green
+  (the throw lands outside any test method), so it was a permanent unexplained error in the log
+  rather than a failure; the test was removed instead of shipped. `element_text` needs an element
+  no documentation provider answers for, which the fixture platform does not produce reliably.
+  Verify both tiers by hand in the corresponding IDE.
 - **`SafeDeleteTool` cannot see references in files outside any content root.** The usage
   search scope only covers content roots, so a reference living outside them will not block
   deletion. (The former fail-open exception handling — treating a failed `ReferencesSearch` as

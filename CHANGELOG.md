@@ -11,6 +11,40 @@
 ### Changed
 - **`ide_refactor_safe_delete`** extended to universal tools with Python and JavaScript/TypeScript element type support.
 
+## [5.8.2] - 2026-08-23
+
+### Fixed
+
+- **`ide_refactor_safe_delete` in `target_type: "file"` mode no longer deletes files whose declarations it never enumerated** ([#336](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/336)) — file mode looks for external usages in three layers, and for an ordinary source file only the third one fires: search every top-level declaration in the file. That enumeration walked `psiFile.children` and stopped there, so any language that nests its top-level declarations one node below the file produced *zero* declarations to search — the scan found nothing, `externalUsages` stayed empty, and the tool deleted a still-referenced file while reporting success. Scala hits this whenever the file has a `package` clause (every definition then lives inside an `ScPackaging` node), and so do `export const X = …` in JS/TS (the name is on the `JSVariable` inside a `JSVarStatement`), `type Foo struct{}` in Go, and Python module-level constants. The walk now descends through unnamed wrapper nodes — stopping at the first named element on each path, so it never walks into a class or function body — and unions in `PsiClassOwner.getClasses()`, the language's own authoritative answer for Java, Kotlin, Scala and Groovy. Symbol mode was never affected.
+- **A missing `Document` no longer empties that same usage scan.** Line and column are display-only, but the collection read the document *first* and returned an empty symbol list when there was none, producing a complete-looking "no usages" result — exactly what the tool's `UsageSearchException` handling exists to prevent ("an incomplete search must never be reported as 'no usages'"). Positions now degrade to `0` instead of the symbol list degrading to empty.
+- **A file delete that had nothing to check now says so.** Deleting a file with no top-level declarations previously reported `contained 0 symbol(s) with no external usages`, which reads like a completed safety check. It now reports that no top-level declarations were found and only direct references to the file itself were checked.
+
+## [5.8.1] - 2026-08-22
+
+### Fixed
+
+- **`ide_diagnostics` no longer analyzes a stale copy of the file** ([#333](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/333)) — tools resolve a path through `LocalFileSystem.findFileByPath`, which returns the cached `VirtualFile` without re-reading it from disk. A file that a coding agent had just rewritten through its own write tool was therefore analyzed as its pre-edit self, so `ide_diagnostics` reported problems that were already fixed or, far more often, `problemCount: 0` for a file that does not compile. Agents read that empty result as "this tool is broken" and stop calling it. The file about to be analyzed is now refreshed from disk and its document committed to PSI first, so results always describe what is on disk. This was previously only curable with the project-wide "Sync external file changes" setting, which refreshes every content root recursively and is off by default for that reason; refreshing the one file being analyzed costs a stat, so it is unconditional and needs no setting. `ide_project_diagnostics` gets the same guarantee, since both share the analysis service. Two cases are handled explicitly rather than left to the refresh: a file with **unsaved editor changes** is left alone, because the in-memory copy is the newer one and is what the daemon analyzes anyway — refreshing over it would pop the IDE's "file changed on disk, reload?" prompt as a side effect of a read-only query; and a file **deleted on disk** is now reported as `File no longer exists on disk: <path>` instead of being analyzed from the stale cache.
+- **`ide_project_diagnostics` no longer reports `complete: true` over files it never saw.** Scope collection runs through `ProjectFileIndex`, which enumerates only what the VFS already knows about, so a file a coding agent had created out of band was invisible to it — and the result still claimed complete coverage, which is exactly the false "clean project" signal the tool's fail-closed coverage metadata exists to prevent. Observed on a real project: 60 files written to a scoped directory, `filesConsidered: 3`, `complete: true`; after an explicit `ide_sync_files`, `filesConsidered: 63`. The requested scope is now refreshed from disk (recursively — new files are only discovered by re-reading directories) before it is enumerated. The refresh is bounded by the `paths` the caller asked for, or the project's content roots when `paths` is omitted, and costs little next to the per-file analysis that follows.
+
+## [5.8.0] - 2026-08-21
+
+### Added
+
+- **Path/directory scoping via a new `paths` parameter on `ide_search_text`, `ide_find_references` and `ide_structural_search_replace`** ([#328](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/328)) — an optional array of project-relative globs where a leading `!` excludes, e.g. `["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]`. `*` matches within a path segment, `**` crosses directories, and a plain directory path includes everything beneath it. Includes are unioned, then excludes subtracted; with only excludes, everything else is searched. Until now no search tool could be limited to a directory: `filePattern` is a filename mask and `scope` offers only production/test/library splits, so "search under `tools/refactoring/` but not `tools/project/`" meant a project-wide search filtered client-side — paying tokens for every discarded hit, and with pagination a whole page could be filtered away and look like an empty result. The globs are applied as a `GlobalSearchScope` intersected with the scope each tool already computes, so they compose with `scope`, `filePattern` and `includeGenerated`, apply to paginated follow-up pages, and restrict what `ide_structural_search_replace` rewrites rather than merely what it reports. Windows-style `\` separators are normalized to `/`. An include glob whose literal directory prefix does not exist in the project — or resolves under a different relative name than it was written with, as happens when a nested module content root is addressed from the project root — returns an error naming the glob and the path that does work, so a mistyped or misrooted path cannot masquerade as "no matches". Because globs are project-relative, an include glob also drops results with no project-relative path (library and jar hits under `project_and_libraries`); an exclude-only filter leaves those alone. Omitting `paths` keeps existing behaviour exactly. The parameter name and semantics match the `paths` argument of the IDE's built-in MCP server, keeping the two servers' contracts aligned.
+- **New `ide_symbol_info` tool** ([#327](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/327)) — returns the resolved signature and documentation of the symbol at a position, so a signature check no longer costs a whole-file read. `ide_find_definition` returns *source text*: with `fullElementPreview` the declaration comes back exactly as written, so parameter and return types stay as the short names the author imported, and no doc comment is included. This tool reports what the IDE resolved. For Java every parameter and return type is expanded to its fully qualified name (`java.util.List<com.example.model.Request>` for a parameter written as `List<Request>`), with structured `parameters`, `returnType`, `typeParameters`, `thrownTypes`, `modifiers` and `visibility`; for every other language with a documentation provider — Kotlin, Python, JS/TS, Go, PHP, Rust — the signature is the one that language's Quick Documentation renders. The `signatureSource` field (`java_psi` / `quick_navigation` / `element_text`) states which path produced the result, so a client can tell a fully resolved signature from an IDE-rendered one. Doc comments come back as plain text, bounded by `maxDocLength` and suppressible with `includeDoc: false`. Addressed like every other navigation tool — `file`+`line`+`column`, so overloads are selectable, or `language`+`symbol`. *(disabled by default)*
+
+## [5.7.0] - 2026-08-20
+
+### Added
+
+- **New `ide_link_build_system` tool** ([#319](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/319)) — links an unlinked Maven or Gradle project using the platform's `ExternalSystemUnlinkedProjectAware` EP, the same code path the IDE's own "Load Maven/Gradle Project" notification uses. Detects the build system automatically from build files. Use when `ide_reload_project` reports "build file found but project is not linked". *(disabled by default)*
+- **`ide_open_project` gains an optional `autoLink` parameter** ([#319](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/319)) — when `true`, automatically links an unlinked Maven/Gradle build system after opening. Default: `false`. `ide_reload_project`'s "not linked" message now points at `ide_link_build_system` instead of telling agents to click IDE UI they can't reach.
+
+### Fixed
+
+- **Kotlin property FQNs no longer resolve to the light backing field.** `ide_find_references` (and every other tool taking a `language`+`symbol` argument) resolved `com.example.Subject#probeName` to the private light field Kotlin generates for a property, on which `ReferencesSearch` finds nothing - so the call returned `0 usages` with `totalIsExact: true`. Non-Java fields now resolve to their navigation element (the `KtProperty`), which returns the real usages.
+>>>>>>> upstream/main
+
 ## [5.6.0] - 2026-08-16
 
 ### Added
@@ -1148,7 +1182,11 @@
 - **Runtime**: JVM 21
 - **Transport**: HTTP+SSE with JSON-RPC 2.0
 
-[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.6.0...HEAD
+[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.2...HEAD
+[5.8.2]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.1...v5.8.2
+[5.8.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.0...v5.8.1
+[5.8.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.7.0...v5.8.0
+[5.7.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.6.0...v5.7.0
 [5.6.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.5.2...v5.6.0
 [5.5.2]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.5.1...v5.5.2
 [5.5.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.5.0...v5.5.1

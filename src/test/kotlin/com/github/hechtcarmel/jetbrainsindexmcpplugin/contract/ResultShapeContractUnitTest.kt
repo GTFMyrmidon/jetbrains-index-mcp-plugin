@@ -31,6 +31,7 @@ import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.ProjectDiagno
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.ReadFileResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.RefactoringResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.BuildInProgressResult
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.LinkInProgressResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.RunTestsInProgressResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.RunTestsResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SearchTextResult
@@ -38,7 +39,9 @@ import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.StructureKind
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.StructureNode
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SuperMethodInfo
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SuperMethodsResult
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SymbolInfoResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SymbolMatch
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SymbolParameterInfo
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.SyncFilesResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.TestEntry
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.TestResultInfo
@@ -555,6 +558,33 @@ class ResultShapeContractUnitTest : TestCase() {
                 )
             ),
             struct(
+                SymbolParameterInfo.serializer(),
+                SymbolParameterInfo(name = "request", type = "com.example.model.Request")
+            ),
+            struct(
+                SymbolInfoResult.serializer(),
+                SymbolInfoResult(
+                    name = "handle",
+                    kind = "method",
+                    qualifiedName = "com.example.Service#handle",
+                    signature = "public com.example.model.Result handle(com.example.model.Request request)",
+                    signatureSource = "java_psi",
+                    parameters = listOf(SymbolParameterInfo(name = "request", type = "com.example.model.Request")),
+                    returnType = "com.example.model.Result",
+                    typeParameters = listOf("T extends java.lang.Number"),
+                    thrownTypes = listOf("java.io.IOException"),
+                    modifiers = listOf("public"),
+                    visibility = "public",
+                    containingDeclaration = "com.example.Service",
+                    documentation = "Handles one request and reports the outcome.",
+                    documentationTruncated = true,
+                    file = "src/main/java/com/example/Service.java",
+                    line = 42,
+                    column = 17,
+                    language = "Java"
+                )
+            ),
+            struct(
                 ReadFileResult.serializer(),
                 ReadFileResult(
                     file = "src/main/java/com/example/Service.java",
@@ -701,6 +731,16 @@ class ResultShapeContractUnitTest : TestCase() {
                     elapsedSeconds = 61,
                     timeoutSeconds = 600,
                     message = "Build is still executing"
+                )
+            ),
+            struct(
+                LinkInProgressResult.serializer(),
+                LinkInProgressResult(
+                    status = "running",
+                    linkId = "a1b2c3d4",
+                    systemName = "Maven",
+                    elapsedSeconds = 12,
+                    message = "Maven link in progress"
                 )
             ),
             struct(

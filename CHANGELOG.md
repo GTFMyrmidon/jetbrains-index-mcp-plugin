@@ -10,6 +10,8 @@
 
 ### Changed
 - **`ide_refactor_safe_delete`** extended to universal tools with Python and JavaScript/TypeScript element type support.
+- **Streamable HTTP and stateless POST endpoints now accept standard HTTP clients without requiring dual MIME types.** Requests sending only `Accept: application/json`, `Accept: */*`, or omitting the `Accept` header are accepted instead of returning `406 Not Acceptable`.
+- **GET and DELETE requests to stateless endpoints return `405 Method Not Allowed` with `Allow: POST`** header instead of returning `406 Not Acceptable`, allowing clients like Cursor to properly probe for SSE streaming support and fall back to stateless JSON-RPC.
 
 ## [5.8.2] - 2026-08-23
 
@@ -43,7 +45,7 @@
 ### Fixed
 
 - **Kotlin property FQNs no longer resolve to the light backing field.** `ide_find_references` (and every other tool taking a `language`+`symbol` argument) resolved `com.example.Subject#probeName` to the private light field Kotlin generates for a property, on which `ReferencesSearch` finds nothing - so the call returned `0 usages` with `totalIsExact: true`. Non-Java fields now resolve to their navigation element (the `KtProperty`), which returns the real usages.
->>>>>>> upstream/main
+
 
 ## [5.6.0] - 2026-08-16
 

@@ -183,14 +183,14 @@ negotiation, `ping`, `tools/list`, `tools/call` dispatch, SSE framing, session i
 the Kotlin generation the target IDE ships (2.2.x for 2025.3). kotlin-sdk 0.11.0+ is built
 against Kotlin 2.3 and fails to compile against this platform. See the comment in the catalog.
 
-**Transport**: This plugin supports two transports with JSON-RPC 2.0. Both require
-`Accept: application/json, text/event-stream` and `Content-Type: application/json` on POSTs, as
-the Streamable HTTP spec mandates:
+**Transport**: This plugin supports two transports with JSON-RPC 2.0. Both accept
+`Accept: application/json` or `Accept: application/json, text/event-stream` and require
+`Content-Type: application/json` on POSTs:
 
 *Streamable HTTP (Primary, MCP 2025-03-26):*
 - `POST /index-mcp/streamable-http` → Stateless JSON-RPC requests/responses
-- `GET /index-mcp/streamable-http` → 405 Method Not Allowed
-- `DELETE /index-mcp/streamable-http` → 405 Method Not Allowed
+- `GET /index-mcp/streamable-http` → 405 Method Not Allowed (`Allow: POST`)
+- `DELETE /index-mcp/streamable-http` → 405 Method Not Allowed (`Allow: POST`)
 
 *Legacy SSE (MCP 2024-11-05):*
 - `GET /index-mcp/sse` → Opens SSE stream, sends `endpoint` event with POST URL

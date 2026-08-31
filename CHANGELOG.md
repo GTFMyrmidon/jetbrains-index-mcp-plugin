@@ -13,6 +13,36 @@
 - **Streamable HTTP and stateless POST endpoints now accept standard HTTP clients without requiring dual MIME types.** Requests sending only `Accept: application/json`, `Accept: */*`, or omitting the `Accept` header are accepted instead of returning `406 Not Acceptable`.
 - **GET and DELETE requests to stateless endpoints return `405 Method Not Allowed` with `Allow: POST`** header instead of returning `406 Not Acceptable`, allowing clients like Cursor to properly probe for SSE streaming support and fall back to stateless JSON-RPC.
 
+## [5.9.2] - 2026-08-29
+
+### Fixed
+
+- **`ide_build_project` now returns build errors in CLion** ([#213](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/213)) — a failed CMake build came back as `success: false` with an *empty* `buildMessages` list. CLion's CMake build bypasses everything the tool listened to: it publishes no platform build events (so the `BuildViewManager` subscription — and with it the MSVC/Clang/CMake raw-output fallback parser added in 4.23.1 — never received input) and CLion has no Java plugin (so the JPS compiler channel is absent too). The tool now also captures what CLion does expose, both hooks resolved reflectively through CLion's own plugin classloader and inert in other IDEs: the cidr build-finished topic (success/canceled, error/warning counts, CLion's summary message) and the build log CLion prints into the Messages tool window, which is fed through the existing MSVC/Clang/CMake parser to produce positioned per-file diagnostics. A failed CLion build now reports the actual compiler errors with file/line/column, falling back to a `Build failed: N errors, M warnings` summary when the log has no parseable locations. `ide_diagnostics`' build-output channel records CLion builds the same way, including ones triggered from the IDE. The build-event subscription was also generalized to a list of build-output view managers (still only `BuildViewManager` — verified against CLion 2025.3 and 2026.2 that no cidr view manager exists), so IDE-specific managers found later can be added declaratively.
+
+## [5.9.1] - 2026-08-28
+
+### Fixed
+
+- **`ide_run_tests` no longer fails with "Test process did not start within 44s" when the pre-test build outlasts the wait budget** ([#348](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/348)) — a Maven/Gradle/JPS compile step longer than ~45–55s (e.g. a slow annotation processor) made the call error out while the build *kept running untracked* in the IDE: no `runId` existed to attach to, `timeoutSeconds` was never enforced on the eventual process, results were never collected, and the suggested "retry" restarted the build from scratch — so the tool could never run such tests at all, since `waitSeconds` is capped below the MCP client's own request timeout by design. The run is now registered for long-polling *before* the test process starts: a call whose budget ends mid-build returns `{"status": "running", "runId": "..."}` (with a message saying the IDE is still compiling) and the agent polls with `runId` until the build finishes and the tests run — same flow as an already-executing run. `timeoutSeconds` still starts counting only when the test process actually starts, build time is bounded by a separate 30-minute start allowance (extended to `timeoutSeconds` when that is larger), a process starting only after that allowance expired is killed immediately instead of running unmanaged, and a build that fails or is cancelled (`processNotStarted`) surfaces as a proper tool error on the next poll instead of leaving the run pollable forever.
+
+## [5.9.0] - 2026-08-28
+
+### Added
+
+- **`ide_run_tests` now returns console output** ([#346](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/346)) — a passing test's `System.out.println("Hello world")` was invisible: the result carried pass/fail counts and failure traces but no output, so agents had to re-run tests in a terminal just to see what they printed. Each test entry now carries an `output` field with the console output that test printed — stdout and stderr merged in print order, exactly as the IDE's test console shows them, with ANSI escapes stripped and system messages (the launch command line, "Process finished with exit code …") excluded — and a new top-level `output` field carries output not attributed to any individual test (framework and suite messages, `@BeforeAll`/`@AfterAll` prints, build-runner log lines, and prints from a test the run killed mid-flight at `timeoutSeconds` — which gets no per-test entry, so its output, often exactly what explains the hang, rides here instead of being dropped). The text is replayed from the same per-node printables the Tests console renders (the platform's own export-to-XML path), so it works for every Service-Message-based framework and never duplicates the `errorMessage`/`stackTrace` fields a failed test already carries. Collection runs on the platform's test-output executor after any pending console flushes, off the EDT, and is bounded by the call's remaining `waitSeconds` budget so long-poll timing guarantees are unchanged. Size is budgeted like stack traces since [#316](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/316): 10k chars per test and 20k for run-level output, trimmed in the middle (keeping the start and the end, never splitting a surrogate pair), with a 100k per-run aggregate after which later tests carry no output — and the middle of an oversized stream is never materialized, so a test spraying hundreds of MB costs O(cap) memory. A test that printed nothing carries `output: null`.
+
+## [5.8.4] - 2026-08-28
+
+### Changed
+
+- **Tool execution failures now suggest running `ide_diagnostics`** ([#343](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/pull/343)) — when `ide_run_tests`, `ide_refactor_rename`, `ide_move_file`, `ide_change_signature`, `ide_convert_java_to_kotlin`, `ide_refactor_safe_delete`, `ide_optimize_imports`, or `ide_reformat_code` fail during execution (not due to bad input), the error message now appends "Run `ide_diagnostics` for more details." so the agent has an immediate next step rather than stopping.
+
+## [5.8.3] - 2026-08-25
+
+### Fixed
+
+- **`ide_run_tests` no longer aborts with a misleading "did not start within 15 seconds" error on slow projects** ([#339](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/pull/339)) — the hardcoded 15s process-start guard is replaced by the remaining `waitSeconds` budget (~45–55s by default). The error message now also tells the agent to retry or raise `waitSeconds`.
+
 ## [5.8.2] - 2026-08-23
 
 ### Fixed
@@ -1184,7 +1214,12 @@
 - **Runtime**: JVM 21
 - **Transport**: HTTP+SSE with JSON-RPC 2.0
 
-[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.2...HEAD
+[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.2...HEAD
+[5.9.2]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.1...v5.9.2
+[5.9.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.0...v5.9.1
+[5.9.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.4...v5.9.0
+[5.8.4]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.3...v5.8.4
+[5.8.3]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.2...v5.8.3
 [5.8.2]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.1...v5.8.2
 [5.8.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.0...v5.8.1
 [5.8.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.7.0...v5.8.0

@@ -576,7 +576,7 @@ Force sync IDE's virtual file system with external file changes.
 Call this when files were created/modified outside the IDE and search tools miss them.
 
 ### ide_build_project (disabled by default)
-Build project using IDE's build system (JPS, Gradle, Maven).
+Build project using IDE's build system (JPS, Gradle, Maven, CMake (CLion)).
 
 Each call blocks at most `waitSeconds` (default 45) so the MCP client's request timeout is never hit. If the build is still executing when the wait budget ends, the call returns `{"status": "running", "buildId": "..."}` while the build continues in the IDE — call the tool again with that `buildId` to keep waiting.
 
@@ -603,22 +603,22 @@ List all test methods/classes discovered by the IDE's test framework extension p
 **Returns**: `{ tests: [{framework, className, methodName, displayName, file, line}], count, truncated }`
 
 ### ide_run_tests (disabled by default)
-Run tests via the IDE's run configuration infrastructure. Results are read from the IDE's test runner, so they work with any Service-Message-based framework (JUnit, TestNG, pytest, Jest, Go test, PHPUnit). Targeting by class/method FQN creates a run config for Java/Kotlin only; for other languages pass an existing run-configuration name. Returns structured pass/fail results.
+Run tests via the IDE's run configuration infrastructure. Results are read from the IDE's test runner, so they work with any Service-Message-based framework (JUnit, TestNG, pytest, Jest, Go test, PHPUnit). Targeting by class/method FQN creates a run config for Java/Kotlin only; for other languages pass an existing run-configuration name. Returns structured pass/fail results with per-test console output.
 
-Each call blocks at most `waitSeconds` (default 45) so the MCP client's own request timeout is never hit. If the run is still executing when the wait budget ends, the call returns `{"status": "running", "runId": "..."}` while the tests keep running in the IDE — call the tool again with that `runId` (and no `target`) to keep waiting. The run itself is bounded by `timeoutSeconds`: when it expires the process is killed and the next poll reports `timedOut: true`.
+Each call blocks at most `waitSeconds` (default 45) so the MCP client's own request timeout is never hit. If the run is still going when the wait budget ends — whether the IDE is still compiling before the test process starts, or the tests themselves are still executing — the call returns `{"status": "running", "runId": "..."}` while the run continues in the IDE — call the tool again with that `runId` (and no `target`) to keep waiting. The run itself is bounded by `timeoutSeconds`, counted from when the test process starts (build time before that is not billed to the run): when it expires the process is killed and the next poll reports `timedOut: true`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `project_path` | string | no | For workspace sub-projects |
 | `target` | string | no* | Existing run config name (any language), or a Java/Kotlin class FQN (`com.example.MyTest`) / method FQN (`com.example.MyTest#testFoo`) — FQN forms are Java/Kotlin-only |
 | `runId` | string | no* | `runId` from a previous `{"status": "running"}` response — attaches to that run and keeps waiting instead of starting a new one |
-| `timeoutSeconds` | integer | no | Max seconds the whole test run may take before its process is killed, enforced across polls (default 120). Ignored with `runId` |
+| `timeoutSeconds` | integer | no | Max seconds the whole test run may take before its process is killed, counted from test process start and enforced across polls (default 120). Ignored with `runId` |
 | `waitSeconds` | integer | no | Max seconds this call may block before returning results or a `running` status (default 45, max 55). Keep below the MCP client's request timeout |
 | `activateToolWindow` | boolean | no | Open the Run tool window for this run (default `false` — the run stays in the background without stealing focus; content is still added to the Run tool window) |
 
 *Exactly one of `target` / `runId` is required.
 
-**Returns**: `{ success, timedOut, noTestsFound, exitCode, passed, failed, errors, total, tests: [{name, status, errorMessage?, stackTrace?}] }`, or while still executing: `{ status: "running", runId, configName, elapsedSeconds, timeoutSeconds, message }`. `stackTrace` is set for failed/errored tests; very long traces are trimmed in the middle, keeping the throw site and the root cause. On mass failures a per-run size budget applies: earlier failures keep their traces, later entries carry `errorMessage` only.
+**Returns**: `{ success, timedOut, noTestsFound, exitCode, passed, failed, errors, total, output?, tests: [{name, status, errorMessage?, stackTrace?, output?}] }`, or while still executing: `{ status: "running", runId, configName, elapsedSeconds, timeoutSeconds, message }`. Each test's `output` is the console output it printed (stdout/stderr merged in print order, ANSI stripped, system messages excluded); the top-level `output` carries output not attributed to any test (framework/suite messages, `@BeforeAll`/`@AfterAll` prints, build-runner log lines, and prints from a test killed mid-run — e.g. at `timeoutSeconds` — which gets no per-test entry). `stackTrace` is set for failed/errored tests; very long traces and outputs are trimmed in the middle (for traces that keeps the throw site and the root cause). On mass failures per-run size budgets apply: earlier failures keep their traces, later entries carry `errorMessage` only, and per-test output stops attaching once its own budget is spent.
 
 ### ide_reload_project (disabled by default)
 Force-reload the project build model (Maven, Gradle, or both). Use after changing build files so IntelliJ resolves updated dependencies before diagnostics or builds. The reload is asynchronous.

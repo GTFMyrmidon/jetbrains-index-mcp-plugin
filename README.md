@@ -99,7 +99,7 @@ enable the write tools.
 - [Quick Start](#quick-start)
 - [Community Integrations](#community-integrations)
 - [Client Configuration](#client-configuration)
-- [Available Tools](#available-tools)
+- [Exposed Tools](#exposed-tools)
 - [Multi-Project Support](#multi-project-support)
 - [Lifecycle Management](#lifecycle-management)
 - [Tool Window](#tool-window)
@@ -257,9 +257,9 @@ Each JetBrains IDE has a unique default port and server name to allow running mu
 
 > **Tip**: Use the "Install on Coding Agents" button in the tool window - it automatically uses the correct server name and port for your IDE.
 
-## Available Tools
+## Exposed Tools
 
-The plugin provides **52 MCP tools** organized by availability. Tools marked *(disabled by default)* can be enabled in <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP Server</kbd>.
+The plugin provides **52 MCP tools** organized by availability. Tools marked *(disabled by default)* can be enabled in <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP Server</kbd> > <kbd>Exposed Tools</kbd>.
 
 ### Universal Tools
 
@@ -282,8 +282,8 @@ These tools work in all supported JetBrains IDEs.
 | `ide_link_build_system` | Link an unlinked Maven/Gradle project for dependency resolution *(disabled by default)* |
 | `ide_import_modules` | Import external Maven project directories as modules into the current IntelliJ window *(disabled by default, requires Maven plugin)* |
 | `ide_open_workspace` | Scan a root directory for Maven projects, or provide an explicit module list, and open them all in one IntelliJ window with full cross-project code intelligence *(disabled by default, requires Maven plugin)* |
-| `ide_build_project` | Build project using IDE's build system (JPS, Gradle, Maven) with structured errors. Long builds return a `buildId` to poll, so the MCP client's request timeout is never hit *(disabled by default)* |
-| `ide_run_tests` | Run tests via the IDE's run configuration infrastructure; structured pass/fail results read from the IDE's test runner (works with any framework — JUnit, TestNG, pytest, Jest, Go test, PHPUnit). Class/method **FQN targeting is Java/Kotlin-only**; other languages pass an existing run-config name. Long runs return a `runId` to poll, so the MCP client's request timeout is never hit *(disabled by default)* |
+| `ide_build_project` | Build project using IDE's build system (JPS, Gradle, Maven, CMake (CLion)) with structured errors. Long builds return a `buildId` to poll, so the MCP client's request timeout is never hit *(disabled by default)* |
+| `ide_run_tests` | Run tests via the IDE's run configuration infrastructure; structured pass/fail results with per-test console output, read from the IDE's test runner (works with any framework — JUnit, TestNG, pytest, Jest, Go test, PHPUnit). Class/method **FQN targeting is Java/Kotlin-only**; other languages pass an existing run-config name. Long runs return a `runId` to poll, so the MCP client's request timeout is never hit *(disabled by default)* |
 | `ide_read_file` | Read file content by path or qualified name, including library/jar sources *(disabled by default)* |
 | `ide_get_active_file` | Get the currently active file(s) in the editor with cursor position *(disabled by default)* |
 | `ide_open_file` | Open a file in the editor with optional line/column navigation *(disabled by default)* |
@@ -489,7 +489,7 @@ Configure the plugin at <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP 
 | Project List in Error Responses | Expanded | Controls `available_projects` detail for invalid/missing `project_path` errors. `Expanded` includes workspace sub-projects; `Compact` returns only top-level project roots |
 | Sync External Changes | false | Sync external file changes before operations (**WARNING: significant performance impact**) |
 | Response Format | JSON | Tool response serialization: JSON or TOON |
-| Disabled Tools | Tool-specific | Per-tool enable/disable toggles. Disabled tools stay hidden and cannot be called until enabled |
+| Disabled Tools | Tool-specific | Per-tool enable/disable toggles on the Exposed Tools sub-page. Disabled tools stay hidden and cannot be called until enabled |
 | **Lifecycle Management** | | |
 | Enable lifecycle management | false | Master toggle for the automatic sleep/wake state machine — no automatic sleep/wake happens until this is enabled |
 | Active → Background (minutes) | 2 | Focus-loss grace period before switching to Power Save Mode |

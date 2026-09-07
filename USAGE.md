@@ -28,7 +28,7 @@ These tools work in every supported JetBrains IDE:
 | `ide_open_workspace` | Scan root directory for Maven projects, or open an explicit module list, in one window | Disabled |
 | `ide_create_module` | Add a directory as an IntelliJ module content root for non-Maven projects | Disabled |
 | `ide_build_project` | Build project with structured errors; long builds return a `buildId` to poll | Disabled |
-| `ide_run_tests` | Run tests via run configs; structured pass/fail results from the IDE's test runner (any framework). FQN class/method targeting is Java/Kotlin-only; other languages pass an existing run-config name. Long runs return a `runId` to poll so the MCP client never times out | Disabled |
+| `ide_run_tests` | Run tests via run configs; structured pass/fail results with per-test console output from the IDE's test runner (any framework). FQN class/method targeting is Java/Kotlin-only; other languages pass an existing run-config name. Long runs return a `runId` to poll so the MCP client never times out | Disabled |
 | `ide_read_file` | Read file content by path or qualified name | Disabled |
 | `ide_get_active_file` | Get currently active editor file(s) | Disabled |
 | `ide_open_file` | Open file in editor with navigation | Disabled |
@@ -807,7 +807,7 @@ File problems are collected through explicit daemon analysis, so they do not dep
 ### ide_project_diagnostics
 
 > **Availability**: Universal Tool - works in all JetBrains IDEs
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings → Tools → Index MCP Server → Exposed Tools
 
 Analyzes many files — up to the whole project, including files not open in any editor — for code problems, with fail-closed coverage metadata (issue #246).
 
@@ -988,7 +988,7 @@ Force the IDE to synchronize its virtual file system and PSI cache with external
 
 ### ide_reload_project
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Force-reload the project build model (Maven, Gradle, or both). Equivalent to clicking **"Reload All Maven Projects"** or **"Reload Gradle Project"** in the IDE.
 
@@ -1016,7 +1016,7 @@ Build model reload scheduled for Maven in 'engine'. IntelliJ is resolving depend
 
 ### ide_link_build_system
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Link an unlinked Maven or Gradle project so the IDE resolves its dependencies. Use when `ide_reload_project` reports "build file found on disk but project is not linked" — this tool does the equivalent of clicking "Load Maven/Gradle Project" in the IDE notification bar.
 
@@ -1039,7 +1039,7 @@ Link an unlinked Maven or Gradle project so the IDE resolves its dependencies. U
 
 ### ide_import_modules
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 > **Requires**: Maven plugin
 
 Import one or more external Maven project directories as modules into the current IntelliJ window, enabling cross-project code intelligence and refactoring. Already imported module roots are skipped.
@@ -1074,7 +1074,7 @@ Imported 2 module(s):
 
 ### ide_open_workspace
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 > **Requires**: Maven plugin
 
 Scan a root directory for Maven projects and open them all in one IntelliJ window with full cross-project code intelligence. Alternatively, provide an explicit list of Maven project paths. Creates a temporary aggregator POM with relative module paths.
@@ -1126,9 +1126,9 @@ Workspace opened with 3 Maven projects from /Users/dev/monorepo. IntelliJ is ind
 
 ### ide_build_project
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
-Build the project using the IDE's build system (supports JPS, Gradle, Maven).
+Build the project using the IDE's build system (supports JPS, Gradle, Maven, CMake (CLion)).
 
 **Long-running builds:** each call blocks at most `waitSeconds` (default 45) so the MCP client's own request timeout (60s in Claude Code) is never hit. If the build is still executing when the wait budget ends, the call returns `{"status": "running", "buildId": "..."}` while the build continues inside the IDE — call the tool again with that `buildId` to keep waiting.
 
@@ -1185,17 +1185,19 @@ Build the project using the IDE's build system (supports JPS, Gradle, Maven).
 
 ### ide_run_tests
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
-Run tests using the IDE's run configuration infrastructure. Returns structured pass/fail results with per-test error messages and failure stack traces.
+Run tests using the IDE's run configuration infrastructure. Returns structured pass/fail results with per-test error messages, failure stack traces, and console output.
 
 Results are read directly from the IDE's test runner rather than from report files on disk, so they always reflect this run and work with any Service-Message-based framework (JUnit, TestNG, pytest, Jest, Go test, PHPUnit).
 
-Failed or errored tests carry a `stackTrace` alongside `errorMessage`. Very long traces are trimmed in the middle (keeping the throw site and the root cause of chained exceptions), and on mass failures a per-run size budget applies: earlier failures keep their traces, later entries carry `errorMessage` only.
+Each test entry carries an `output` field with the console output that test printed — stdout and stderr merged in print order, exactly as the IDE's test console shows them, with ANSI escapes stripped and system messages (the launch command line, "Process finished with exit code …") excluded. Output not attributed to any individual test — framework and suite messages, `@BeforeAll`/`@AfterAll` prints, build-runner log lines, and prints from a test killed mid-run (e.g. at `timeoutSeconds`), which gets no per-test entry — comes back on the result's top-level `output` field. A test that printed nothing carries `output: null`.
+
+Failed or errored tests carry a `stackTrace` alongside `errorMessage`. Very long traces and outputs are trimmed in the middle (keeping the start and the end — for traces that is the throw site and the root cause of chained exceptions), and on mass failures per-run size budgets apply: earlier failures keep their traces, later entries carry `errorMessage` only, and per-test output stops attaching once its own budget is spent.
 
 **Language support:** Passing an **existing run configuration name** works for any language/framework. Passing a **class or method FQN** (so the plugin creates the run config for you) is supported **only for Java/Kotlin** — for Python, JS/TS, Go, PHP, or Rust, create/select a run configuration in the IDE and pass its name.
 
-**Long-running runs:** each call blocks at most `waitSeconds` (default 45) so the MCP client's own request timeout (60s in Claude Code) is never hit. If the tests are still executing when the wait budget ends, the call returns `{"status": "running", "runId": "..."}` while the run continues inside the IDE — call the tool again with that `runId` (and no `target`) to keep waiting. The run itself is bounded by `timeoutSeconds`: once it expires the test process is killed and the next poll reports `timedOut: true`.
+**Long-running runs:** each call blocks at most `waitSeconds` (default 45) so the MCP client's own request timeout (60s in Claude Code) is never hit. If the run is still going when the wait budget ends — whether the IDE is still compiling before the test process starts, or the tests themselves are still executing — the call returns `{"status": "running", "runId": "..."}` while the run continues inside the IDE — call the tool again with that `runId` (and no `target`) to keep waiting. The run itself is bounded by `timeoutSeconds`, counted from when the test process starts (build time before that is not billed to the run): once it expires the test process is killed and the next poll reports `timedOut: true`.
 
 **Use when:**
 - Running a specific test class or method after a code change
@@ -1209,7 +1211,7 @@ Failed or errored tests carry a `stackTrace` alongside `errorMessage`. Very long
 | `project_path` | string | No | Absolute path to the project root (required when multiple projects are open) |
 | `target` | string | No* | One of: (1) existing run config name (any language), (2) FQN class `com.example.MyTest`, (3) FQN method `com.example.MyTest#testFoo`. FQN forms (2) and (3) are **Java/Kotlin-only** |
 | `runId` | string | No* | `runId` from a previous `{"status": "running"}` response — attaches to that run and keeps waiting instead of starting a new one |
-| `timeoutSeconds` | integer | No | Max seconds the whole test run may take before its process is killed, enforced across polls (default: 120). Ignored with `runId` |
+| `timeoutSeconds` | integer | No | Max seconds the whole test run may take before its process is killed, counted from test process start and enforced across polls (default: 120). Ignored with `runId` |
 | `waitSeconds` | integer | No | Max seconds this call may block before returning results or a `running` status (default: 45, max: 55). Keep below the MCP client's request timeout |
 | `activateToolWindow` | boolean | No | Open (activate) the Run tool window for this run. Default: `false` — the run executes in the background without stealing focus; its content is still added to the Run tool window |
 
@@ -1241,14 +1243,16 @@ Failed or errored tests carry a `stackTrace` alongside `errorMessage`. Very long
   "failed": 1,
   "errors": 0,
   "total": 3,
+  "output": "shared fixture initialized\n",
   "tests": [
-    { "name": "com.example.MyTest.testFoo", "status": "passed" },
-    { "name": "com.example.MyTest.testBar", "status": "passed" },
+    { "name": "com.example.MyTest.testFoo", "status": "passed", "output": "Hello world\n" },
+    { "name": "com.example.MyTest.testBar", "status": "passed", "output": null },
     {
       "name": "com.example.MyTest.testBaz",
       "status": "failed",
       "errorMessage": "expected:<1> but was:<2>",
-      "stackTrace": "java.lang.AssertionError: expected:<1> but was:<2>\n\tat com.example.MyTest.testBaz(MyTest.java:42)"
+      "stackTrace": "java.lang.AssertionError: expected:<1> but was:<2>\n\tat com.example.MyTest.testBaz(MyTest.java:42)",
+      "output": "state before assertion: 2\n"
     }
   ]
 }
@@ -1271,7 +1275,7 @@ Failed or errored tests carry a `stackTrace` alongside `errorMessage`. Very long
 
 ### ide_read_file
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Read file content by file path or fully qualified class name.
 
@@ -1325,7 +1329,7 @@ Read file content by file path or fully qualified class name.
 
 ### ide_get_active_file
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Get the currently active file(s) open in the IDE editor, including split panes.
 
@@ -1372,7 +1376,7 @@ Get the currently active file(s) open in the IDE editor, including split panes.
 
 ### ide_open_file
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Open a file in the IDE editor with optional line/column navigation.
 
@@ -1417,7 +1421,7 @@ Open a file in the IDE editor with optional line/column navigation.
 
 ### ide_find_symbol
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Searches for code symbols (classes, interfaces, methods, fields, and functions) by name using the IDE's semantic index and IntelliJ's Go to Symbol matching.
 
@@ -1536,7 +1540,7 @@ For Markdown heading outlines, use `ide_file_structure`.
 
 ### ide_install_plugin
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Install a plugin zip into the IDE, replacing any existing version. When no path is given, auto-detects the most recently modified zip in `build/distributions/` of the active project — the output of `./gradlew buildPlugin`.
 
@@ -1575,7 +1579,7 @@ Plugin 'com.example.my-plugin' installed from my-plugin-1.0.0.zip. Restart the I
 
 ### ide_restart
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Restart the IDE. This terminates the MCP connection — the AI assistant will lose connectivity and must reconnect after the IDE comes back up.
 
@@ -1610,7 +1614,7 @@ Restart the IDE. This terminates the MCP connection — the AI assistant will lo
 
 ### ide_set_power_save_mode
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Enable or disable IDE Power Save Mode. When enabled, background inspections and code analysis are suspended, reducing CPU and memory pressure. The index and all code intelligence operations (find usages, refactoring, navigation) remain fully functional.
 
@@ -1651,7 +1655,7 @@ Power Save Mode enabled (IDE-wide).
 
 ### ide_close_project
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Close an open project window and free its memory. The project can be reopened later via Recent Projects or `ide_open_project`.
 
@@ -1691,7 +1695,7 @@ Project 'myproject' is closing.
 
 ### ide_create_module
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Add a directory as an IntelliJ module with a content root, enabling code intelligence for non-Maven projects (TypeScript, plain directories, etc.). Supports optional directory exclusions. For Maven projects, use `ide_import_modules` instead.
 
@@ -1746,7 +1750,7 @@ Note: indexing is async — call ide_index_status if subsequent tools hit dumb m
 
 ### ide_open_project
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Open a project by filesystem path and wait until indexing is complete, so subsequent MCP tool calls against the opened project succeed immediately. If the project is already open, returns successfully right away.
 
@@ -1913,6 +1917,9 @@ Move a file to a new directory using the IDE's refactoring engine. Applies langu
 - Automatically creates destination directory if it doesn't exist
 - Detects name conflicts at the destination
 - Fails fast for ambiguous PHP semantic moves instead of reporting a false success
+- Surfaces the IDE's move conflicts (e.g. a package-private class moved away from its users) as `warnings` instead of dropping them
+- Keeps consumers compiling on a same-package move between modules or source roots: imports naming the unchanged package that the IDE's usage rewrite removed from consuming Java files are restored, and each repair is listed in `warnings`
+- Warns when the destination lies outside every source root, i.e. in a directory no module compiles yet (a new Maven/Gradle module the IDE has not imported); reload or link the build system afterwards
 
 **Use when:**
 - Reorganizing project structure
@@ -1974,7 +1981,7 @@ Move a file to a new directory using the IDE's refactoring engine. Applies langu
 
 ### ide_reformat_code
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Reformat code according to the project's code style settings. Equivalent to the IDE's "Reformat Code" action (<kbd>Ctrl+Alt+L</kbd> / <kbd>Cmd+Opt+L</kbd>).
 
@@ -2024,7 +2031,7 @@ Reformat code according to the project's code style settings. Equivalent to the 
 
 ### ide_optimize_imports
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Optimize imports in a file: remove unused imports and organize the remaining imports according to the project code style. Equivalent to the IDE's "Optimize Imports" action (<kbd>Ctrl+Alt+O</kbd> / <kbd>Cmd+Opt+O</kbd>). Does **not** reformat code. Supports undo (Ctrl/Cmd+Z).
 
@@ -2057,7 +2064,7 @@ Optimize imports in a file: remove unused imports and organize the remaining imp
 
 ### ide_structural_search_replace
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Pattern-based code search and transformation using IntelliJ's Structural Search and Replace (SSR) engine. Matches code patterns structurally rather than textually — understands types, expressions, statements, and code structure.
 
@@ -2128,7 +2135,7 @@ When `replacePattern` is omitted, the tool performs search-only and returns matc
 
 ### ide_edit_member
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Replace an entire member declaration (signature + body) with new content. The tool locates the member by name, optional parameter count, and optional line number, then replaces the complete declaration.
 
@@ -2184,7 +2191,7 @@ Replace an entire member declaration (signature + body) with new content. The to
 
 ### ide_change_signature
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Change a method's signature — name, return type, visibility, and parameters — with automatic updates to all callers using IntelliJ's Change Signature refactoring. Supports reordering, adding, removing, and renaming parameters.
 
@@ -2276,7 +2283,7 @@ Change a method's signature — name, return type, visibility, and parameters �
 
 ### ide_create_file
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Create a new source file with content, immediately indexed by IntelliJ. The file is created through IntelliJ's VFS, so it is instantly available for `ide_find_references`, `ide_refactor_rename`, `ide_edit_member`, and all other IDE tools without needing `ide_sync_files`.
 
@@ -2323,7 +2330,7 @@ Use this instead of the Write tool for creating source files (e.g., `.java`, `.k
 
 ### ide_replace_text_in_file
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Find and replace text in a file using IntelliJ's Document API. Performs plain text or regex replacement through IntelliJ's document model, so changes are immediately visible to the index, PSI, and all other IDE tools without needing `ide_sync_files`.
 
@@ -2392,7 +2399,7 @@ Use this for mechanical text substitutions — e.g., replacing a method call wra
 
 ### ide_insert_member
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Insert a new member (method, field, inner class, etc.) at a structural position within a class or at the top level of a file.
 
@@ -2450,7 +2457,7 @@ Insert a new member (method, field, inner class, etc.) at a structural position 
 
 ### ide_replace_member
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Replace only the body of a method or the initializer of a field, preserving the existing signature. This is safer than `ide_edit_member` when the signature should remain unchanged.
 
@@ -2926,7 +2933,7 @@ Finds the complete inheritance hierarchy for a method - all parent methods it ov
 
 ### ide_file_structure
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Get the hierarchical structure of a source file, similar to the IDE's Structure view (<kbd>Cmd+7</kbd> / <kbd>Alt+7</kbd>).
 
@@ -2981,7 +2988,7 @@ These tools require the Java plugin and are only available in **IntelliJ IDEA** 
 
 ### ide_list_tests
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 > **Availability**: Requires Java plugin — only available in **IntelliJ IDEA** and **Android Studio** (uses the `com.intellij.testFramework` extension point declared by the Java plugin)
 
 List all test methods discovered by the IDE's test framework extension points (JUnit, TestNG, etc.).
@@ -3033,7 +3040,7 @@ List all test methods discovered by the IDE's test framework extension points (J
 
 ### ide_convert_java_to_kotlin
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Convert one or more Java files to Kotlin using IntelliJ's built-in J2K (Java-to-Kotlin) converter.
 
@@ -3336,7 +3343,7 @@ Accepts an optional `path` parameter to release a closed managed project without
 
 ### ide_release_all_projects
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Release every managed project (including closed ones) from lifecycle management at once. Also disables Power Save Mode globally.
 
@@ -3350,7 +3357,7 @@ Release every managed project (including closed ones) from lifecycle management 
 
 ### ide_enroll_all_projects
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Enroll every currently open project in lifecycle management. Projects already managed are skipped.
 
@@ -3398,7 +3405,7 @@ Query recent lifecycle events from the in-memory ring buffer (default 500 entrie
 
 ### ide_set_lifecycle_log_file
 
-> **Default**: Disabled - enable in Settings > Tools > Index MCP Server
+> **Default**: Disabled - enable in Settings > Tools > Index MCP Server → Exposed Tools
 
 Enable or disable writing lifecycle events to the persistent log file on disk (`mcp-lifecycle.log`, written alongside `idea.log`). The in-memory ring buffer queried by `ide_lifecycle_log` is always active regardless of this setting.
 

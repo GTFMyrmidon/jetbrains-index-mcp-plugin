@@ -153,6 +153,58 @@ class RunTestsUnitTest : TestCase() {
         assertEquals(3_000L, RunTestsTool.finalizeWaitMillis(0, callStartMs = 0, nowMs = 0))
     }
 
+    // ── outputWaitMillis ───────────────────────────────────────────────────────
+
+    /**
+     * Console-output collection (issue #346) runs after tree finalize, so its ceiling must also
+     * fit inside what remains of the call's wait budget — stacking finalize + output past the
+     * MCP client's ~60s request timeout would lose the just-collected results. Its floor is
+     * deliberately tiny (it stacks on the 3s finalize floor once the budget is spent, and at
+     * waitSeconds=55 the call is then ~2s from the client's 60s default): dropped output
+     * degrades the result, it does not lose it.
+     */
+    fun testOutputWaitCappedAtCollectionTimeout() {
+        // 45s budget, 5s elapsed: plenty left, but never wait longer than the 5s collection cap
+        assertEquals(5_000L, RunTestsTool.outputWaitMillis(45, callStartMs = 0, nowMs = 5_000))
+    }
+
+    fun testOutputWaitShrinksToRemainingBudget() {
+        // 45s budget, 43s elapsed: only 2s left — use it instead of the full 5s cap
+        assertEquals(2_000L, RunTestsTool.outputWaitMillis(45, callStartMs = 0, nowMs = 43_000))
+    }
+
+    fun testOutputWaitFlooredWhenBudgetExhausted() {
+        assertEquals(250L, RunTestsTool.outputWaitMillis(55, callStartMs = 0, nowMs = 55_000))
+        assertEquals(250L, RunTestsTool.outputWaitMillis(0, callStartMs = 0, nowMs = 0))
+    }
+
+    // ── processStartAllowanceMs ────────────────────────────────────────────────
+
+    /**
+     * A run is registered before its test process starts, because the IDE's before-run build
+     * can outlast any single call's wait budget (issue #348) — a slow build must long-poll,
+     * never error. The starting phase is bounded by this allowance instead of `timeoutSeconds`
+     * (build time is not billed to the run), so the allowance must dwarf any wait budget.
+     */
+    fun testProcessStartAllowanceDefaultsFarBeyondAnyWaitBudget() {
+        assertEquals(
+            30 * 60 * 1000L,
+            ActiveTestRunRegistry.processStartAllowanceMs(timeoutSeconds = 120)
+        )
+    }
+
+    /**
+     * `timeoutSeconds` extends (never shrinks) the start allowance: a caller budgeting a
+     * multi-hour run has implicitly accepted a build longer than the 30-minute default, and
+     * there is no separate knob for the build phase.
+     */
+    fun testProcessStartAllowanceExtendsWithLargeTimeoutSeconds() {
+        assertEquals(
+            7_200_000L,
+            ActiveTestRunRegistry.processStartAllowanceMs(timeoutSeconds = 7_200)
+        )
+    }
+
     // ── needsPsiSync ───────────────────────────────────────────────────────────
 
     /**
@@ -183,13 +235,36 @@ class RunTestsUnitTest : TestCase() {
             runId = "abc-123",
             configName = "MyTest config",
             elapsedSeconds = 61,
-            timeoutSeconds = 7200
+            timeoutSeconds = 7200,
+            processStarted = true
         )
         assertEquals("running", result.status)
         assertEquals("abc-123", result.runId)
         assertEquals("MyTest config", result.configName)
         assertEquals(61L, result.elapsedSeconds)
         assertEquals(7200, result.timeoutSeconds)
+        assertTrue("message must repeat the runId for the poll call", result.message.contains("abc-123"))
+        assertTrue("message must name the runId parameter", result.message.contains("runId"))
+    }
+
+    /**
+     * While the IDE is still compiling (issue #348) the payload must tell the agent the process
+     * has not started — so it keeps polling instead of concluding the tests are stuck — and
+     * still carry the actionable runId instruction.
+     */
+    fun testInProgressResultDistinguishesStartingPhase() {
+        val result = RunTestsTool.buildInProgressResult(
+            runId = "abc-123",
+            configName = "MyTest config",
+            elapsedSeconds = 61,
+            timeoutSeconds = 120,
+            processStarted = false
+        )
+        assertEquals("running", result.status)
+        assertTrue(
+            "starting-phase message must say the process has not started, got: ${result.message}",
+            result.message.contains("not started")
+        )
         assertTrue("message must repeat the runId for the poll call", result.message.contains("abc-123"))
         assertTrue("message must name the runId parameter", result.message.contains("runId"))
     }

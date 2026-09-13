@@ -11,12 +11,15 @@
 ### Changed
 
 - Bind-host settings now validate syntax before resolver/bind checks and normalize IDN hostnames before persistence, binding, and restart. Malformed labels and host:port input stay invalid even with wildcard DNS, while unchanged legacy hostnames and scoped IPv6 values remain usable.
+- `ide_diagnostics` accepts a small `files` batch of relative or in-project absolute paths with one shared deadline and fail-closed per-file coverage (`analyzed`, `timed_out`, `failed`, `skipped`, `not_analyzed`, or `not_found`) plus truncation metadata. Existing single-file and build/test-only requests remain supported. Isolate per-file analyzer failures, propagate request cancellation, report missing files explicitly, and deduplicate aliases without collapsing distinct symlink/parent paths. `maxProblems` bounds the aggregate response.
 - `ide_sync_files` now validates every explicit target before refreshing anything and returns one whole-batch error listing all invalid paths instead of partial success. It accepts absolute paths inside any allowed project/content root; relative paths fall back across content roots when `project_path` is omitted or selects the project base, while a specifically selected content root remains confined.
 - Targeted synchronization now reports normalized `syncedPaths`, actual absolute `refreshedRoots`, and `deletedPaths`. Known deleted targets refresh through their nearest existing parent, new targets are discovered with shallow ancestor refreshes, and registered symlink-root spellings are preserved without recursively refreshing unrelated directories.
+
 
 ### Fixed
 
 - Host-header protection now covers every configured bind host that resolves to loopback and accepts the standard loopback aliases plus that bind host's normalized spelling. Incoming `Host` values are never DNS-resolved.
+- The shared per-file analysis used by `ide_diagnostics` and `ide_project_diagnostics` now bounds the complete operation, including disk refresh, PSI setup, and waiting for the analysis lock. An open-editor daemon that consumes the timeout no longer starts a second batch-analysis budget.
 
 ## [5.9.6] - 2026-09-09
 

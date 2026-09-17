@@ -314,7 +314,7 @@ These tools activate based on available language plugins:
 | `ide_call_hierarchy` | Analyze callers or callees in bounded, cursor-paginated breadth-first order, accepting and returning `symbolId` | Java, Kotlin, Python, JS/TS, Go, PHP, Rust |
 | `ide_find_implementations` | Find all implementations of an interface or abstract method | Java, Kotlin, Python, JS/TS, PHP, Rust |
 | `ide_find_super_methods` | Find the full inheritance hierarchy of methods that a method overrides/implements | Java, Kotlin, Python, JS/TS, PHP |
-| `ide_file_structure` | Get hierarchical file structure (similar to IDE's Structure view) with start and end line numbers for each element *(disabled by default)* | Java, Kotlin, Python, JS/TS, PHP, Markdown |
+| `ide_file_structure` | Get legacy file structure text; opt into structured nodes and exact handles with `includeNodes`/`includeSymbolIds` *(disabled by default)* | Java, Kotlin, Python, JS/TS, PHP, Markdown |
 
 PHP file structure support requires the PHP plugin and is available in PhpStorm or IntelliJ IDEA Ultimate with the PHP plugin enabled.
 
@@ -346,6 +346,12 @@ handles for exact declarations. Reference and implementation searches plus `ide_
 Cached search pages remain marked `stale: true` after PSI edits and materialize handles only for
 the returned page from exact smart pointers. Deleted declarations and handles from another project
 or server session are rejected; successful member edits return current declaration metadata.
+
+`ide_file_structure` keeps the legacy `structure` response by default and avoids returning a
+structured-node payload or allocating handles. Use `includeNodes=true`
+for structured declarations, and `includeSymbolIds=true` when exact handles are needed (it implies
+`includeNodes`). Handle allocation is opt-in and capped at 100 per response; lower it with
+`maxSymbolIds` (1–100). Large responses report `symbolIdsTruncated` and `symbolIdsOmitted`.
 
 ### Project Lifecycle Management Tools
 

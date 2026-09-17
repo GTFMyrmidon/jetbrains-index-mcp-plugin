@@ -563,7 +563,7 @@ These activate based on available language plugins (Java, Python, JavaScript/Typ
 - `ide_call_hierarchy` - Get call hierarchy for a method with bounded BFS pages and cursors (Java, Kotlin, Python, JS/TS, Go, PHP, Rust). Supports `language`+`symbol` as an alternative to `file`+`line`+`column`.
 - `ide_find_implementations` - Find implementations of interface/method (Java, Kotlin, Python, JS/TS, PHP, Rust — not Go). Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
 - `ide_find_super_methods` - Find methods that a given method overrides/implements (Java, Kotlin, Python, JS/TS, PHP — not Go, Rust). Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
-- `ide_file_structure` - Get hierarchical file structure similar to IDE's Structure view with start/end line numbers (Java, Kotlin, Python, JS/TS, Markdown) (disabled by default)
+- `ide_file_structure` - Get legacy file structure text; opt into structured nodes and exact handles with `includeNodes`/`includeSymbolIds` (disabled by default)
 
 **Java/Kotlin-Only Tools:**
 - `ide_list_tests` - List all test methods/classes discovered by the IDE's test framework extension points (JUnit, TestNG, etc.). Optional `file` parameter limits scan to a single file. Returns entries with className, methodName, framework, file path, and line number. Requires Java plugin — the `com.intellij.testFramework` extension point is declared by the Java plugin. (disabled by default)
@@ -665,6 +665,12 @@ deleted declarations and handles from another project or server session are reje
 member edits return current declaration metadata. Kotlin abstract/sealed declarations retain
 `ABSTRACT_CLASS`, while anonymous implementations report a useful source location without an
 invented qualified name.
+
+`ide_file_structure` keeps the legacy `structure` response by default and avoids returning a
+structured-node payload or allocating handles. Use `includeNodes=true`
+for structured declarations, and `includeSymbolIds=true` when exact handles are needed (it implies
+`includeNodes`). Handle allocation is opt-in and capped at 100 per response; lower it with
+`maxSymbolIds` (1–100). Large responses report `symbolIdsTruncated` and `symbolIdsOmitted`.
 
 ### Structured Lookup Targets
 

@@ -54,7 +54,7 @@ These tools activate based on available language plugins:
 | `ide_call_hierarchy` | Analyze method call relationships | Java, Kotlin, Python, JS/TS, Go, PHP, Rust |
 | `ide_find_implementations` | Find interface implementations | Java, Kotlin, Python, JS/TS, PHP, Rust |
 | `ide_find_super_methods` | Find overridden methods | Java, Kotlin, Python, JS/TS, PHP |
-| `ide_file_structure` | Hierarchical file structure with start/end line numbers *(disabled by default)* | Java, Kotlin, Python, JS/TS, PHP, Markdown |
+| `ide_file_structure` | Legacy file structure text; opt-in structured nodes and exact handles via `includeNodes`/`includeSymbolIds` *(disabled by default)* | Java, Kotlin, Python, JS/TS, PHP, Markdown |
 
 ### Java-Specific Tools
 
@@ -3393,6 +3393,9 @@ PHP support requires the PHP plugin and is available in PhpStorm or IntelliJ IDE
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | string | Yes | Path to the file relative to project root |
+| `includeNodes` | boolean | No | Include structured declaration nodes. Default: false |
+| `includeSymbolIds` | boolean | No | Bind exact handles for nodes; implies `includeNodes`. Default: false |
+| `maxSymbolIds` | integer | No | Handle budget when `includeSymbolIds=true`, from 1 to 100. Default: 100 |
 
 **Example Request:**
 
@@ -3402,7 +3405,9 @@ PHP support requires the PHP plugin and is available in PhpStorm or IntelliJ IDE
   "params": {
     "name": "ide_file_structure",
     "arguments": {
-      "file": "src/main/kotlin/com/example/UserService.kt"
+      "file": "src/main/kotlin/com/example/UserService.kt",
+      "includeNodes": true,
+      "includeSymbolIds": true
     }
   }
 }
@@ -3414,11 +3419,46 @@ PHP support requires the PHP plugin and is available in PhpStorm or IntelliJ IDE
 {
   "file": "src/main/kotlin/com/example/UserService.kt",
   "language": "Kotlin",
-  "structure": "interface UserService (lines 15-18)\n  fun findUser(id: String): User (line 16)\n  fun deleteUser(id: String) (line 17)\n\nclass UserServiceImpl (lines 20-42)\n  val repository: UserRepository (line 21)\n  override fun findUser(id: String): User (lines 23-29)\n  override fun deleteUser(id: String) (lines 30-35)\n  private fun validate(id: String) (lines 37-41)"
+  "structure": "interface UserService (lines 15-18)\n  fun findUser(id: String): User (line 16)\n  fun deleteUser(id: String) (line 17)\n\nclass UserServiceImpl (lines 20-42)\n  val repository: UserRepository (line 21)\n  override fun findUser(id: String): User (lines 23-29)\n  override fun deleteUser(id: String) (lines 30-35)\n  private fun validate(id: String) (lines 37-41)",
+  "nodes": [
+    {
+      "name": "UserService",
+      "kind": "INTERFACE",
+      "modifiers": ["public"],
+      "signature": "interface UserService",
+      "line": 15,
+      "endLine": 18,
+      "symbolId": "sym_user-service",
+      "children": [
+        {
+          "name": "findUser",
+          "kind": "METHOD",
+          "modifiers": [],
+          "signature": "fun findUser(id: String): User",
+          "line": 16,
+          "endLine": 16,
+          "symbolId": "sym_find-user",
+          "children": []
+        }
+      ]
+    }
+  ]
 }
 ```
 
-**Note:** Each element in the structure output includes both start and end line numbers (e.g., `(lines 42-65)` for multi-line elements, `(line 42)` for single-line elements), making it easy to identify the full extent of each declaration.
+**Compatibility:** `structure` remains the original human-readable tree. Structured `nodes` are
+opt-in with `includeNodes=true`, so existing calls avoid the structured payload and handle
+allocation. Set
+`includeSymbolIds=true` when exact handles are needed; this also enables `nodes`. Handle allocation
+is limited to 100 per response by default and can be lowered with `maxSymbolIds` (1–100), preventing
+one large outline from evicting handles owned by other tools. `symbolIdsTruncated` reports whether
+the per-response budget was hit; `symbolIdsOmitted` counts eligible nodes left without a handle.
+The ordinary session/TTL/LRU rules still apply to returned handles.
+
+Each element in `structure` still includes both start and end line numbers (for example,
+`(lines 42-65)` for multi-line elements and `(line 42)` for single-line elements). Kotlin nodes use
+semantic kinds (`INTERFACE`, `CLASS`, `ENUM`, `ANNOTATION`, `OBJECT`) instead of inferring the kind
+from the common `KtClass` implementation type.
 
 ---
 

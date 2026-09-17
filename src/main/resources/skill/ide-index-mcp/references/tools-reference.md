@@ -326,14 +326,26 @@ the root keeps its handle. Use bounded pages to obtain handles for every returne
 **Pagination**: Without `maxNodes`/`cursor`, legacy nested trees and limits remain. Explicit pages expose traversal-local `nodeId`, `parentId`, and `depth` for the first-discovery tree; `returnedNodes` excludes the root. Type `traversal` preserves combined BFS order. Follow `cursor` while present. Retention limits return the computed page with `hasMore=true`, no cursor, and `truncationReason`; narrow the query to continue. Cursors are session/project-bound, expire after ten idle minutes, and retain at most 128 snapshots overall and ten per traversal. Handles refresh on every page.
 
 ### ide_file_structure (disabled by default)
+
 Get hierarchical file structure like IDE's Structure panel. Each element includes both start and end line numbers (e.g., `(lines 42-65)` for multi-line elements, `(line 42)` for single-line elements).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | string | yes | Relative file path |
 | `project_path` | string | no | Project root path |
+| `includeNodes` | boolean | no | Include structured declaration nodes. Default: false |
+| `includeSymbolIds` | boolean | no | Bind exact handles for nodes; implies `includeNodes`. Default: false |
+| `maxSymbolIds` | integer | no | Handle budget when handles are enabled, from 1–100. Default: 100 |
 
-**Returns**: `{ file, language, structure }` (formatted tree with types, modifiers, signatures, and start/end line numbers)
+**Returns**: `{ file, language, structure, nodes, symbolIdsTruncated, symbolIdsOmitted }`
+`structure` is retained for compatibility. Set `includeNodes=true` to receive the same hierarchy as
+structured data; set `includeSymbolIds=true` when exact handles are needed (it implies nodes). IDs
+are bound to the exact extracted PSI elements rather than reconstructed from line numbers. Kotlin
+node kinds distinguish `INTERFACE`, `CLASS`, `ENUM`, `ANNOTATION`, and `OBJECT`.
+Without structured output, `nodes` is empty and the handle fields are `false` and `0`; with handles
+enabled, they report the per-response budget outcome.
+Handles are limited to 100 per response by default; `maxSymbolIds` can lower that limit to 1–100.
+`symbolIdsTruncated` flags this per-response budget and `symbolIdsOmitted` counts budget omissions.
 **Languages**: Java, Kotlin, Python, JS/TS, PHP, Markdown.
 
 PHP support requires the PHP plugin and is available in PhpStorm or IntelliJ IDEA Ultimate with the PHP plugin enabled.

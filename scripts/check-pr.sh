@@ -2,6 +2,7 @@
 # check-pr.sh — pre-push validation against CONTRIBUTING.md rules.
 # Run before every push. Exits non-zero if any check fails.
 set -euo pipefail
+export PYTHONUTF8=1
 
 # All paths below are repo-root-relative; run from anywhere.
 cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null || cd "$(git rev-parse --show-toplevel)"

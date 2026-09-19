@@ -84,29 +84,20 @@ object ProjectUtils {
         }
     }
 
-    fun getRelativePath(project: Project, virtualFile: VirtualFile): String {
-        val basePath = project.basePath
-        val filePath = virtualFile.path
-        if (basePath != null && (filePath == basePath || filePath.startsWith("$basePath/"))) {
-            return filePath.removePrefix(basePath).removePrefix("/")
-        }
-        val contentRootPath = findMatchingContentRoot(project, filePath)
-        if (contentRootPath != null) {
-            return filePath.removePrefix(contentRootPath).removePrefix("/")
-        }
-        return filePath
-    }
+    fun getRelativePath(project: Project, virtualFile: VirtualFile): String =
+        getRelativePath(project, virtualFile.path)
 
     fun getRelativePath(project: Project, absolutePath: String): String {
-        val basePath = project.basePath
-        if (basePath != null && (absolutePath == basePath || absolutePath.startsWith("$basePath/"))) {
-            return absolutePath.removePrefix(basePath).removePrefix("/")
+        val normalizedAbsolute = ProjectResolver.normalizePath(absolutePath)
+        val basePath = project.basePath?.let { ProjectResolver.normalizePath(it) }
+        if (basePath != null && (normalizedAbsolute == basePath || normalizedAbsolute.startsWith("$basePath/"))) {
+            return normalizedAbsolute.removePrefix(basePath).removePrefix("/")
         }
-        val contentRootPath = findMatchingContentRoot(project, absolutePath)
+        val contentRootPath = findMatchingContentRoot(project, normalizedAbsolute)
         if (contentRootPath != null) {
-            return absolutePath.removePrefix(contentRootPath).removePrefix("/")
+            return normalizedAbsolute.removePrefix(contentRootPath).removePrefix("/")
         }
-        return absolutePath
+        return normalizedAbsolute
     }
 
     fun resolveProjectFile(project: Project, relativePath: String): VirtualFile? {
@@ -178,13 +169,14 @@ object ProjectUtils {
      */
     private fun findMatchingContentRoot(project: Project, absolutePath: String): String? {
         try {
+            val normalizedAbsolute = ProjectResolver.normalizePath(absolutePath)
             val modules = ModuleManager.getInstance(project).modules
             var bestMatch: String? = null
             for (module in modules) {
                 val contentRoots = ModuleRootManager.getInstance(module).contentRoots
                 for (root in contentRoots) {
-                    val rootPath = root.path
-                    if (absolutePath == rootPath || absolutePath.startsWith("$rootPath/")) {
+                    val rootPath = ProjectResolver.normalizePath(root.path)
+                    if (normalizedAbsolute == rootPath || normalizedAbsolute.startsWith("$rootPath/")) {
                         if (bestMatch == null || rootPath.length > bestMatch.length) {
                             bestMatch = rootPath
                         }

@@ -6,42 +6,45 @@ import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.toArgumentFailur
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.exceptions.IndexNotReadyException
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.handlers.BuiltInSearchScope
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.handlers.LanguageHandlerRegistry
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.handlers.OptimizedSymbolSearch
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.handlers.PathGlobMatcher
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.PaginationService
-import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.ProjectResolver
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.SymbolIdRegistry
 import io.modelcontextprotocol.kotlin.sdk.types.ImageContent
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.lifecycle.ProjectModeService
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.settings.McpSettings
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.ClassResolver
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.cancellableEdtAction
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.ProjectUtils
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PsiUtils
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PsiSourcePosition
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.ResponseFormatter
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.ResolvedSymbolInfo
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.EDT
-import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.application.asContextElement
 import com.intellij.openapi.application.readAction as platformReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Document
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
 import java.io.File
+import java.io.IOException
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
+import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.usageView.UsageViewUtil
 import com.intellij.util.concurrency.annotations.RequiresReadLock
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -90,12 +93,12 @@ import kotlinx.serialization.json.put
  *
  * ## PSI Synchronization
  *
- * By default, all tools automatically synchronize PSI with document changes before
- * execution. This ensures that recently created or modified files (e.g., by external
- * tools like Claude Code's write tool) are visible to PSI-based searches.
+ * Tools whose [requiresPsiSync] flag is enabled can synchronize PSI with document changes before
+ * execution. When the user opts in, this ensures that recently created or modified files (e.g.,
+ * by external tools like Claude Code's write tool) are visible to PSI-based searches.
  *
  * This behavior is controlled by:
- * - **User setting**: "Sync external file changes" in Settings (enabled by default)
+ * - **User setting**: "Sync external file changes" in Settings (disabled by default)
  * - **Per-tool opt-out**: Override [requiresPsiSync] to `false` for tools that don't use PSI
  *
  * ```kotlin
@@ -162,11 +165,7 @@ abstract class AbstractMcpTool : McpTool {
      * or other scenarios where the EDT is already the current thread.
      */
     protected suspend fun <T> edtAction(action: () -> T): T {
-        return if (ApplicationManager.getApplication().isDispatchThread) {
-            action()
-        } else {
-withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { action() }
-        }
+        return cancellableEdtAction(action)
     }
 
     /**
@@ -178,12 +177,8 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
      * submission inherited from the caller.
      */
     protected suspend fun commitDocuments(project: Project) {
-        if (ApplicationManager.getApplication().isDispatchThread) {
+        edtAction {
             PsiDocumentManager.getInstance(project).commitAllDocuments()
-        } else {
-            withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) {
-                PsiDocumentManager.getInstance(project).commitAllDocuments()
-            }
         }
     }
 
@@ -244,12 +239,20 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
             }
         }
 
+        val normalizedArguments = if (UnifiedTargetArguments.isSupportedBy(inputSchema)) {
+            UnifiedTargetArguments.normalize(arguments).getOrElse {
+                return createErrorResult(it.message ?: "Invalid target")
+            }
+        } else {
+            arguments
+        }
+
         val settings = McpSettings.getInstance()
-        if (needsPsiSync(arguments) && settings.syncExternalChanges) {
+        if (needsPsiSync(normalizedArguments) && settings.syncExternalChanges) {
             ensurePsiUpToDate(project)
         }
         return try {
-            doExecute(project, arguments)
+            doExecute(project, normalizedArguments)
         } catch (e: com.intellij.openapi.project.IndexNotReadyException) {
             // The IDE entered dumb mode (reindexing) during this call.
             createErrorResult(
@@ -413,12 +416,26 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
             return localFileSystem.refreshAndFindFileByPath(canonicalPath)
         }
 
-        // Absolute paths are validated against project roots before resolving
-        if (relativePath.startsWith("/") || relativePath.startsWith("\\")) {
-            val canonical = File(relativePath).canonicalPath
+        fun canonicalPathOrNull(file: File): String? = try {
+            file.canonicalPath
+        } catch (_: IOException) {
+            null
+        } catch (_: SecurityException) {
+            null
+        }
+
+        fun isWithinRoot(canonicalPath: String, rootPath: String): Boolean =
+            canonicalPath.startsWith(rootPath + File.separator)
+
+        // Absolute paths are validated against project roots before resolving.
+        val requestedFile = File(relativePath)
+        val hasAbsoluteSyntax = requestedFile.isAbsolute ||
+            relativePath.startsWith('/') || relativePath.startsWith('\\')
+        if (hasAbsoluteSyntax) {
+            val canonical = canonicalPathOrNull(requestedFile) ?: return null
             val projectRoots = listOfNotNull(project.basePath) + ProjectUtils.getModuleContentRoots(project)
             val withinProject = projectRoots.any { root ->
-                canonical.startsWith(File(root).canonicalPath + File.separator)
+                canonicalPathOrNull(File(root))?.let { isWithinRoot(canonical, it) } == true
             }
             if (!withinProject) return null
             return findOrRefresh(canonical)
@@ -427,8 +444,9 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
         // Try project basePath first
         val basePath = project.basePath
         if (basePath != null) {
-            val canonical = File(basePath, relativePath).canonicalPath
-            if (canonical.startsWith(File(basePath).canonicalPath + File.separator)) {
+            val canonical = canonicalPathOrNull(File(basePath, relativePath))
+            val canonicalBase = canonicalPathOrNull(File(basePath))
+            if (canonical != null && canonicalBase != null && isWithinRoot(canonical, canonicalBase)) {
                 val file = findOrRefresh(canonical)
                 if (file != null) return file
             }
@@ -437,8 +455,9 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
         // Try module content roots (workspace sub-project support)
         for (rootPath in ProjectUtils.getModuleContentRoots(project)) {
             if (rootPath != basePath) {
-                val canonical = File(rootPath, relativePath).canonicalPath
-                if (canonical.startsWith(File(rootPath).canonicalPath + File.separator)) {
+                val canonical = canonicalPathOrNull(File(rootPath, relativePath))
+                val canonicalRoot = canonicalPathOrNull(File(rootPath))
+                if (canonical != null && canonicalRoot != null && isWithinRoot(canonical, canonicalRoot)) {
                     val file = findOrRefresh(canonical)
                     if (file != null) return file
                 }
@@ -525,6 +544,7 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
         MISSING,
         POSITION,
         SYMBOL,
+        SYMBOL_ID,
         CONFLICT
     }
 
@@ -555,7 +575,11 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
      * A symbol-mode intent requires both `language` and `symbol`; a lone optional field can be a
      * client/schema placeholder and must not conflict with a complete position lookup.
      */
-    protected fun resolveLookupMode(arguments: JsonObject): LookupModeState {
+    protected fun resolveLookupMode(
+        arguments: JsonObject,
+        allowSymbolId: Boolean = false
+    ): LookupModeState {
+        val hasSymbolId = allowSymbolId && optionalStringArg(arguments, ParamNames.SYMBOL_ID) != null
         val hasLanguage = optionalStringArg(arguments, ParamNames.LANGUAGE) != null
         val hasSymbol = optionalStringArg(arguments, ParamNames.SYMBOL) != null
         val hasAnySymbol = hasLanguage || hasSymbol
@@ -567,6 +591,8 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
         val hasCompletePosition = hasFile && hasLine && hasColumn
 
         return when {
+            hasSymbolId && (hasAnySymbol || hasAnyPosition) -> LookupModeState.CONFLICT
+            hasSymbolId -> LookupModeState.SYMBOL_ID
             hasCompleteSymbol && hasAnyPosition -> LookupModeState.CONFLICT
             hasCompletePosition -> LookupModeState.POSITION
             hasAnySymbol -> LookupModeState.SYMBOL
@@ -683,16 +709,24 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
     protected fun resolveElementFromArguments(
         project: Project,
         arguments: JsonObject,
-        allowLibraryFilesForPosition: Boolean = false
+        allowLibraryFilesForPosition: Boolean = false,
+        allowSymbolId: Boolean = false
     ): Result<PsiElement> {
+        val symbolId = if (allowSymbolId) optionalStringArg(arguments, ParamNames.SYMBOL_ID) else null
         val language = optionalStringArg(arguments, ParamNames.LANGUAGE)
         val symbol = optionalStringArg(arguments, ParamNames.SYMBOL)
         val file = optionalStringArg(arguments, ParamNames.FILE)
         val line = arguments[ParamNames.LINE]?.jsonPrimitive?.int
         val column = arguments[ParamNames.COLUMN]?.jsonPrimitive?.int
 
-        return when (resolveLookupMode(arguments)) {
-            LookupModeState.CONFLICT -> ErrorMessages.SYMBOL_AND_POSITION_EXCLUSIVE.toArgumentFailure()
+        return when (resolveLookupMode(arguments, allowSymbolId)) {
+            LookupModeState.CONFLICT -> {
+                if (symbolId != null) ErrorMessages.SYMBOL_ID_AND_OTHER_TARGET_EXCLUSIVE.toArgumentFailure()
+                else ErrorMessages.SYMBOL_AND_POSITION_EXCLUSIVE.toArgumentFailure()
+            }
+
+            LookupModeState.SYMBOL_ID ->
+                SymbolIdRegistry.getInstance().resolve(project, symbolId!!)
 
             LookupModeState.SYMBOL -> {
                 if (language == null) return ErrorMessages.missingParamForSymbol(ParamNames.LANGUAGE).toArgumentFailure()
@@ -721,8 +755,49 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
                 Result.success(element)
             }
 
-            LookupModeState.MISSING -> ErrorMessages.SYMBOL_OR_POSITION_REQUIRED.toArgumentFailure()
+            LookupModeState.MISSING -> {
+                val message = if (allowSymbolId) {
+                    ErrorMessages.SYMBOL_ID_OR_SYMBOL_OR_POSITION_REQUIRED
+                } else {
+                    ErrorMessages.SYMBOL_OR_POSITION_REQUIRED
+                }
+                message.toArgumentFailure()
+            }
         }
+    }
+
+    /** Binds a declaration's navigation target while preserving exact handle identity. */
+    @RequiresReadLock
+    protected fun bindNavigationSymbolId(project: Project, element: PsiElement, preferredId: String? = null): String =
+        bindExactSymbolId(project, PsiUtils.resolveNavigationTarget(element), preferredId)
+
+    /** Preserve an already resolved handle's PSI identity, including non-named and light elements. */
+    @RequiresReadLock
+    protected fun bindExactSymbolId(project: Project, element: PsiElement, preferredId: String? = null): String =
+        SymbolIdRegistry.getInstance().bind(project, element, preferredId)
+
+    /** Builds the common post-resolution/refactoring metadata returned to MCP clients. */
+    @RequiresReadLock
+    protected fun resolvedSymbolInfo(
+        project: Project,
+        element: PsiElement,
+        preferredId: String? = null,
+        preserveExactTarget: Boolean = false
+    ): ResolvedSymbolInfo {
+        val target = if (preserveExactTarget) element else PsiUtils.resolveNavigationTarget(element)
+        val position = PsiSourcePosition.position(project, target)
+        val qualifiedName = PsiUtils.qualifiedName(target)
+        return ResolvedSymbolInfo(
+            symbolId = bindExactSymbolId(project, target, preferredId),
+            name = (target as? PsiNamedElement)?.name,
+            kind = UsageViewUtil.getType(target).takeIf { it.isNotBlank() },
+            container = qualifiedName ?: PsiUtils.getAstPath(target).joinToString(".").ifEmpty { null },
+            file = target.containingFile?.virtualFile?.let { getRelativePath(project, it) },
+            line = position?.line,
+            column = position?.column,
+            qualifiedName = qualifiedName,
+            language = OptimizedSymbolSearch.getLanguageName(target)
+        )
     }
 
     /**
@@ -790,16 +865,124 @@ withContext(Dispatchers.EDT + ModalityState.nonModal().asContextElement()) { act
 
     /**
      * Gets a page from the pagination cache.
-     * Extracts project basePath and PSI mod count, delegates to PaginationService.
+     * Delegates to PaginationService with exact project identity and materializes cached symbol
+     * handles only for the items in the page that is about to be returned.
      * Returns GetPageResult — caller maps Success/Error into tool-specific CallToolResult.
      *
      * @param pageSize Explicit pageSize from request, or null to use the cursor-embedded value.
      */
     protected suspend fun getPageFromCache(cursorToken: String, pageSize: Int?, project: Project): PaginationService.GetPageResult {
         val service = ApplicationManager.getApplication().getService(PaginationService::class.java)
-        val basePath = ProjectResolver.normalizePath(project.basePath ?: "")
-        val modCount = PsiModificationTracker.getInstance(project).modificationCount
-        return service.getPage(cursorToken, pageSize, basePath, modCount)
+        val modificationTracker = PsiModificationTracker.getInstance(project)
+        val modCount = modificationTracker.modificationCount
+        val pageResult = service.getPage(cursorToken, pageSize, project, modCount, expectedToolName = name)
+        if (pageResult !is PaginationService.GetPageResult.Success) return pageResult
+
+        val page = pageResult.page
+        val hasSerializedPayload = page.serializedItems.isNotEmpty() || page.serializedMetadata.isNotEmpty()
+        if (!service.isPageSnapshotCurrent(
+                page = page,
+                project = project,
+                expectedToolName = name
+            )
+        ) {
+            return invalidatedCachedPage()
+        }
+
+        if (!hasSerializedPayload) return pageResult
+
+        val materialized = suspendingReadAction {
+            val beforeModCount = modificationTracker.modificationCount
+            if (!service.isPageSnapshotCurrent(
+                    page = page,
+                    project = project,
+                    expectedToolName = name
+                )
+            ) {
+                return@suspendingReadAction invalidatedCachedPage()
+            }
+
+            val result = materializeCachedSymbolHandles(project, pageResult)
+            val afterModCount = modificationTracker.modificationCount
+            if (beforeModCount != afterModCount ||
+                !service.isPageSnapshotCurrent(
+                    page = page,
+                    project = project,
+                    expectedToolName = name
+                )
+            ) {
+                invalidatedCachedPage()
+            } else {
+                result
+            }
+        }
+
+        if (materialized !is PaginationService.GetPageResult.Success) return materialized
+        return if (service.isPageSnapshotCurrent(
+                page = page,
+                project = project,
+                expectedToolName = name
+            )
+        ) {
+            PaginationService.GetPageResult.Success(
+                materialized.page.copy(stale = page.stale || modificationTracker.modificationCount != page.psiModCount)
+            )
+        } else {
+            invalidatedCachedPage()
+        }
+    }
+
+    private fun invalidatedCachedPage(): PaginationService.GetPageResult.Error =
+        PaginationService.GetPageResult.Error(
+            PaginationService.CursorError.SEARCH_INVALIDATED,
+            "Cached symbol context expired or changed. Please re-search."
+        )
+
+    /**
+     * A cached smart pointer outlives the short-lived symbol handle that was last returned for it.
+     * Rebind the exact pointer on demand, preferring the previous handle while it is still valid.
+     */
+    private fun materializeCachedSymbolHandles(
+        project: Project,
+        result: PaginationService.GetPageResult.Success
+    ): PaginationService.GetPageResult {
+        return try {
+            fun materialize(serialized: PaginationService.SerializedResult): JsonElement {
+                val pointer = serialized.exactSymbolPointer ?: return serialized.data
+                val symbolId = synchronized(serialized) {
+                    val element = pointer.element
+                        ?: throw IllegalStateException("A cached symbol no longer resolves")
+                    bindExactSymbolId(project, element, serialized.materializedSymbolId).also {
+                        serialized.materializedSymbolId = it
+                    }
+                }
+                val objectData = serialized.data as? JsonObject
+                    ?: throw IllegalStateException("Cached symbol data is not a JSON object")
+                return JsonObject(objectData + (ParamNames.SYMBOL_ID to JsonPrimitive(symbolId)))
+            }
+
+            val page = result.page
+            val materializedMetadata = page.metadata + page.serializedMetadata.mapValues { (_, value) ->
+                materialize(value).toString()
+            }
+            PaginationService.GetPageResult.Success(
+                page.copy(
+                    items = page.serializedItems.map(::materialize),
+                    metadata = materializedMetadata
+                )
+            )
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: com.intellij.openapi.project.IndexNotReadyException) {
+            throw e
+        } catch (_: Exception) {
+            PaginationService.GetPageResult.Error(
+                PaginationService.CursorError.SEARCH_INVALIDATED,
+                "Cached symbol context expired or changed. Please re-search."
+            )
+        }
     }
 
     /**

@@ -68,7 +68,7 @@ These tools activate based on installed language plugins:
 
 When working across many projects simultaneously, idle ones consume memory unnecessarily and leave editors open for no reason. Lifecycle management sleeps and wakes projects based on window focus and MCP activity. It is opt-in — disabled by default; turn on "Enable lifecycle management" in Settings → Tools → Index MCP Server, after which no further configuration is required.
 
-- **Automatic sleep/wake** - Projects move from active → background (Power Save on) → dormant (editors closed, PSI cache freed) → closed (fully unloaded), and auto-reopen transparently on the next MCP call
+- **Automatic sleep/wake** - Projects move from active → background (Power Save on) → dormant (editor tabs closed, PSI cache freed) → closed (fully unloaded), and auto-reopen transparently on the next MCP call. Every MCP tool call restarts a project's idle countdown, and the tabs a dormant transition closed reopen when you return to the project window
 - **`ide_project_status`** - Combined snapshot of every open and managed project
 - **`ide_set_project_mode`** / **`ide_get_project_modes`** - Explicit mode control
 - **`ide_release_project`** - Unenroll a project from lifecycle management
@@ -99,7 +99,7 @@ enable the write tools.
 - [Quick Start](#quick-start)
 - [Community Integrations](#community-integrations)
 - [Client Configuration](#client-configuration)
-- [Available Tools](#available-tools)
+- [Exposed Tools](#exposed-tools)
 - [Multi-Project Support](#multi-project-support)
 - [Lifecycle Management](#lifecycle-management)
 - [Tool Window](#tool-window)
@@ -257,9 +257,9 @@ Each JetBrains IDE has a unique default port and server name to allow running mu
 
 > **Tip**: Use the "Install on Coding Agents" button in the tool window - it automatically uses the correct server name and port for your IDE.
 
-## Available Tools
+## Exposed Tools
 
-The plugin provides **52 MCP tools** organized by availability. Tools marked *(disabled by default)* can be enabled in <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP Server</kbd>.
+The plugin provides **52 MCP tools** organized by availability. Tools marked *(disabled by default)* can be enabled in <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP Server</kbd> > <kbd>Exposed Tools</kbd>.
 
 ### Universal Tools
 
@@ -268,16 +268,16 @@ These tools work in all supported JetBrains IDEs.
 | Tool | Description |
 |------|-------------|
 | `ide_find_references` | Find all references to a symbol across the entire project, optionally restricted to path globs via `paths` |
-| `ide_find_definition` | Find the definition/declaration location of a symbol |
-| `ide_symbol_info` | Resolved signature and documentation for the symbol at a position — parameter and return types expanded to fully qualified names (Java), structured `parameters`, modifiers, containing declaration, and the doc comment as plain text, without reading the file *(disabled by default)* |
+| `ide_find_definition` | Find the definition/declaration location of a symbol; accepts top-level `symbolId`, position, or qualified-name selectors plus an equivalent nested `target`, and returns a reusable `symbolId` |
+| `ide_symbol_info` | Resolved signature and documentation for a symbol — accepts the same flat or nested targets as `ide_find_definition`; parameter and return types expanded to fully qualified names (Java), structured `parameters`, modifiers, containing declaration, and the doc comment as plain text, without reading the file *(disabled by default)* |
 | `ide_find_class` | Search for classes/interfaces by name with camelCase/substring/wildcard matching |
 | `ide_find_file` | Search for files by name using IDE's file index |
 | `ide_find_symbol` | Search for symbols (classes, methods, fields, functions) by name with IntelliJ Go to Symbol matching *(disabled by default)* |
 | `ide_search_text` | Text search using IntelliJ Find in Files with context filtering (substring and regex matching), optionally restricted to path globs via `paths` |
-| `ide_diagnostics` | Analyze file problems with fresh editor diagnostics for open files or public batch diagnostics for closed files, plus optional build/test results; intentions are best-effort |
+| `ide_diagnostics` | Analyze one `file` or up to 100 supplied `files` under one shared timeout budget, with per-file coverage states and configurable `maxProblems`; accepts relative or in-project absolute paths, plus optional build/test results; intentions are best-effort and single-file only |
 | `ide_project_diagnostics` | Batch/project-scope diagnostics for many files including unopened ones, with fail-closed coverage metadata: a `complete` flag plus per-file `analyzed`/`timed_out`/`failed`/`skipped`/`not_analyzed` states, so an empty result can never be mistaken for a clean project. Long analyses return an `analysisId` to poll *(disabled by default)* |
 | `ide_index_status` | Check if the IDE is in dumb mode or smart mode |
-| `ide_sync_files` | Force sync IDE's virtual file system and PSI cache with external file changes |
+| `ide_sync_files` | Force sync IDE's virtual file system and PSI cache for relative or in-project absolute paths, including deleted targets via their nearest existing parent |
 | `ide_reload_project` | Force-reload Maven or Gradle build model after modifying `pom.xml`/`build.gradle` *(disabled by default)* |
 | `ide_link_build_system` | Link an unlinked Maven/Gradle project for dependency resolution *(disabled by default)* |
 | `ide_import_modules` | Import external Maven project directories as modules into the current IntelliJ window *(disabled by default, requires Maven plugin)* |
@@ -292,16 +292,16 @@ These tools work in all supported JetBrains IDEs.
 | `ide_create_module` | Add a directory as an IntelliJ module with a content root, enabling code intelligence for non-Maven projects (TypeScript, plain directories, etc.) *(disabled by default)* |
 | `ide_open_project` | Open a project by absolute path and wait until indexing completes (configurable timeout); returns immediately if already open *(disabled by default)* |
 | `ide_install_plugin` | Install a plugin zip into the IDE, replacing any existing version — auto-detects `build/distributions/*.zip` when no path is given *(disabled by default)* |
-| `ide_restart` | Restart the IDE — terminates the MCP connection; call after `ide_install_plugin` *(disabled by default)* |
-| `ide_refactor_rename` | Rename a symbol or file and update all references across the project (all languages; use `targetType` for explicit file mode) |
-| `ide_refactor_safe_delete` | Safely delete a symbol or file after checking for usages |
+| `ide_restart` | Restart the IDE — the MCP server is down only while the IDE relaunches; poll `ide_index_status` until it answers, then continue. Call after `ide_install_plugin` *(disabled by default)* |
+| `ide_refactor_rename` | Preview with `dryRun`, or rename a symbol by `symbolId`/position (or a file) and update all references across the project (all languages; use `targetType` for explicit file mode) |
+| `ide_refactor_safe_delete` | Preview or safely delete an exact/nested symbol target or file after checking usages across languages |
 | `ide_move_file` | Move a file to a new directory, applying language-aware reference/package updates when the IDE provides a semantic move backend |
 | `ide_reformat_code` | Reformat code using project code style with import optimization *(disabled by default)* |
 | `ide_optimize_imports` | Optimize imports without reformatting code *(disabled by default)* |
 | `ide_structural_search_replace` | Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine, optionally restricted to path globs via `paths` *(disabled by default)* |
 | `ide_create_file` | Create a new source file with content, immediately indexed by IntelliJ — use instead of Write for source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`) *(disabled by default)* |
 | `ide_replace_text_in_file` | Find and replace text in a file using IntelliJ's Document API — changes immediately visible to index and PSI without `ide_sync_files` *(disabled by default)* |
-| `ide_change_signature` | Change method signature with automatic caller updates (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
+| `ide_change_signature` | Preview or change a method signature by exact/nested target, updating callers automatically (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
 | `ide_edit_member` | Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
 | `ide_insert_member` | Insert a new member at a structural position in a class or file (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
 | `ide_replace_member` | Replace a method body or field initializer only, preserving the signature (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) *(disabled by default)* |
@@ -312,13 +312,22 @@ These tools activate based on available language plugins:
 
 | Tool | Description | Languages |
 |------|-------------|-----------|
-| `ide_type_hierarchy` | Get the complete type hierarchy (supertypes and subtypes) | Java, Kotlin, Python, JS/TS, Go, PHP, Rust |
-| `ide_call_hierarchy` | Analyze method call relationships (callers or callees) | Java, Kotlin, Python, JS/TS, Go, PHP, Rust |
+| `ide_type_hierarchy` | Get a bounded, cursor-paginated type hierarchy in deterministic breadth-first order, accepting and returning `symbolId` | Java, Kotlin, Python, JS/TS, Go, PHP, Rust |
+| `ide_call_hierarchy` | Analyze callers or callees in bounded, cursor-paginated breadth-first order, accepting and returning `symbolId` | Java, Kotlin, Python, JS/TS, Go, PHP, Rust |
 | `ide_find_implementations` | Find all implementations of an interface or abstract method | Java, Kotlin, Python, JS/TS, PHP, Rust |
 | `ide_find_super_methods` | Find the full inheritance hierarchy of methods that a method overrides/implements | Java, Kotlin, Python, JS/TS, PHP |
-| `ide_file_structure` | Get hierarchical file structure (similar to IDE's Structure view) with start and end line numbers for each element *(disabled by default)* | Java, Kotlin, Python, JS/TS, PHP, Markdown |
+| `ide_file_structure` | Get legacy file structure text; opt into structured nodes and exact handles with `includeNodes`/`includeSymbolIds` *(disabled by default)* | Java, Kotlin, Python, JS/TS, PHP, Markdown |
 
 PHP file structure support requires the PHP plugin and is available in PhpStorm or IntelliJ IDEA Ultimate with the PHP plugin enabled.
+
+### Bounded hierarchy pages with legacy tree compatibility
+
+Without `maxNodes` or `cursor`, call/type hierarchies keep nested trees and legacy limits.
+Explicit pagination returns bounded breadth-first pages with traversal-local `nodeId`,
+`parentId`, and `depth`. Continuations are scoped to the project, tool, and server session.
+A continuation budget limit preserves the computed page and reports `truncationReason`;
+narrow the query when `hasMore=true` has no cursor. Cancellation and indexing transitions
+propagate through reflective handlers instead of completing an empty hierarchy.
 
 ### Java-Specific Tools
 
@@ -326,9 +335,25 @@ PHP file structure support requires the PHP plugin and is available in PhpStorm 
 |------|-------------|
 | `ide_list_tests` | List all test methods/classes discovered by the IDE's test framework extension points (JUnit, TestNG, etc.) *(disabled by default, requires Java plugin)* |
 | `ide_convert_java_to_kotlin` | Convert Java files to Kotlin using IntelliJ's built-in converter *(disabled by default, requires Java + Kotlin plugins)* |
-| `ide_refactor_safe_delete` | Safely delete an element, checking for usages first |
 
-> **Note**: Refactoring tools modify source files. All changes support undo via <kbd>Ctrl/Cmd+Z</kbd>.
+
+> **Note**: Applied refactorings modify source files and support undo via
+> <kbd>Ctrl/Cmd+Z</kbd>. `dryRun: true` previews do not modify files or create an undo command.
+
+### Symbol handles across navigation and member editing
+
+Class, symbol, reference, implementation, and super-method searches return opaque `symbolId`
+handles for exact declarations. Reference and implementation searches plus `ide_edit_member` and
+`ide_replace_member` accept the same nested `target` variants as definition and symbol-info tools.
+Cached search pages remain marked `stale: true` after PSI edits and materialize handles only for
+the returned page from exact smart pointers. Deleted declarations and handles from another project
+or server session are rejected; successful member edits return current declaration metadata.
+
+`ide_file_structure` keeps the legacy `structure` response by default and avoids returning a
+structured-node payload or allocating handles. Use `includeNodes=true`
+for structured declarations, and `includeSymbolIds=true` when exact handles are needed (it implies
+`includeNodes`). Handle allocation is opt-in and capped at 100 per response; lower it with
+`maxSymbolIds` (1–100). Large responses report `symbolIdsTruncated` and `symbolIdsOmitted`.
 
 ### Project Lifecycle Management Tools
 
@@ -352,8 +377,10 @@ PHP file structure support requires the PHP plugin and is available in PhpStorm 
 |------|-----------|---------|-----------|-----------------|
 | `active` | off | open | loaded | focus lost for N min → background |
 | `background` | on | open | loaded | N min idle → dormant |
-| `dormant` | on | closed | freed | N min idle → closed |
+| `dormant` | on | closed (reopen on next focus) | freed | N min idle → closed |
 | `closed` | — | — | freed | next MCP call → background (auto-reopens) |
+
+"Idle" means no MCP tool call: every call on a managed project restarts its background → dormant countdown, and the countdown only runs while the project window is unfocused (an `active` project has no countdown). A `dormant` transition closes the editor tabs but remembers them — across IDE restarts too — and reopens them the moment the window regains focus (or the project is released); an MCP wake leaves them closed, since the agent does not need them.
 
 Timing thresholds are configurable in Settings. Lifecycle management is opt-in (disabled by default); once "Enable lifecycle management" is turned on in Settings → Tools → Index MCP Server, projects enroll automatically on first MCP use and auto-reopen when an MCP tool targets a closed project — existing tools require no changes.
 
@@ -426,7 +453,7 @@ When you use the plugin across multiple projects simultaneously — common when 
 Once enabled, projects enroll on their first MCP tool call and are notified via balloon. From that point, transitions happen based on focus and MCP activity:
 
 1. **Focus lost** → after 2 minutes, Power Save Mode on (`background`)
-2. **No MCP calls** → after 2 more minutes, editors close and PSI cache is freed (`dormant`)
+2. **No MCP calls** → after 2 more minutes, editor tabs close and PSI cache is freed (`dormant`). Every MCP call restarts this countdown. The closed tabs come back when the window regains focus
 3. **Still idle** → after 10 minutes, project window closes entirely (`closed`)
 4. **Next MCP call** → project reopens automatically, indexes, and responds normally
 
@@ -434,7 +461,7 @@ No changes are needed in existing MCP tools — `ProjectResolver` handles the re
 
 The lifecycle manager never closes below the configurable minimum of open managed projects (default 4): projects at the floor stay dormant (memory mostly freed, MCP still reachable) instead of closing. If all projects are closed by other means, any tool call automatically reopens one managed project to restore MCP access.
 
-Use `ide_project_status` to see the current state of all projects at a glance, and `ide_lifecycle_log` to see what happened and why — useful when a project closed unexpectedly. Each log event has a `trigger` field: `timer:inactivity`, `timer:close`, `focus_gained`, `mcp_call`, `auto_open`, `user`, etc.
+Use `ide_project_status` to see the current state of all projects at a glance, and `ide_lifecycle_log` to see what happened and why — useful when a project closed unexpectedly. Each log event has a `trigger` field: `timer:inactivity`, `timer:close`, `focus_gained`, `mcp_call`, `auto_open`, `user`, etc., and a `detail` where it helps — e.g. how long a project had no MCP call when the inactivity timer fired, or how many editor tabs a dormant transition closed.
 
 Timing thresholds are configurable in Settings → Tools → Index MCP Server → Project Lifecycle Management.
 
@@ -489,7 +516,7 @@ Configure the plugin at <kbd>Settings</kbd> > <kbd>Tools</kbd> > <kbd>Index MCP 
 | Project List in Error Responses | Expanded | Controls `available_projects` detail for invalid/missing `project_path` errors. `Expanded` includes workspace sub-projects; `Compact` returns only top-level project roots |
 | Sync External Changes | false | Sync external file changes before operations (**WARNING: significant performance impact**) |
 | Response Format | JSON | Tool response serialization: JSON or TOON |
-| Disabled Tools | Tool-specific | Per-tool enable/disable toggles. Disabled tools stay hidden and cannot be called until enabled |
+| Disabled Tools | Tool-specific | Per-tool enable/disable toggles on the Exposed Tools sub-page. Disabled tools stay hidden and cannot be called until enabled |
 | **Lifecycle Management** | | |
 | Enable lifecycle management | false | Master toggle for the automatic sleep/wake state machine — no automatic sleep/wake happens until this is enabled |
 | Active → Background (minutes) | 2 | Focus-loss grace period before switching to Power Save Mode |

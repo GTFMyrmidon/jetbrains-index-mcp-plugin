@@ -105,6 +105,8 @@ class RustMemberResolver(private val project: Project) : MemberResolver {
         return members
     }
 
+    override fun resolveMember(element: PsiElement): ResolvedMember? = resolveDeclaration(element)
+
     override fun getInsertionOffset(scope: PsiElement, position: String, anchor: ResolvedMember?): Int? {
         return when (position) {
             "before" -> {

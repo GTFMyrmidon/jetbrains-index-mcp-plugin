@@ -13,6 +13,140 @@
 - **Streamable HTTP and stateless POST endpoints now accept standard HTTP clients without requiring dual MIME types.** Requests sending only `Accept: application/json`, `Accept: */*`, or omitting the `Accept` header are accepted instead of returning `406 Not Acceptable`.
 - **GET and DELETE requests to stateless endpoints return `405 Method Not Allowed` with `Allow: POST`** header instead of returning `406 Not Acceptable`, allowing clients like Cursor to properly probe for SSE streaming support and fall back to stateless JSON-RPC.
 
+## [5.17.1] - 2026-09-18
+
+### Changed
+
+- **`ide_restart` is no longer described as a terminal step** ([#407](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/pull/407)) — the tool description, the bundled companion skill, `USAGE.md`, and `README.md` now say the MCP server is down only while the IDE relaunches: poll `ide_index_status` until it answers, then continue. Streamable HTTP clients need no reconnect (every call is an independent POST); legacy SSE clients must reopen the stream; symbol handles and search cursors issued before the restart are invalid afterwards.
+
+## [5.17.0] - 2026-09-17
+
+### Added
+
+- Add structured file-outline nodes alongside formatted text, with exact declaration handles, opt-in nodes/handles, and explicit handle-budget metadata.
+
+### Changed
+
+- `ide_file_structure` now returns the JSON envelope for empty or unparseable files, with the legacy message in `structure` and an empty `nodes` array when structured output is requested.
+
+## [5.16.0] - 2026-09-17
+
+### Added
+
+- Add opt-in bounded hierarchy pagination with parent/depth identity and session-scoped cursors while preserving legacy trees and limits.
+
+## [5.15.1] - 2026-09-16
+
+### Fixed
+
+- **Kotlin body replacement formats the closing brace** — `ide_replace_member` with `reformat: true` formats the complete member, so content such as `return 21` needs no trailing newline to put `}` on its own line. Returned body lines follow the final PSI after formatting and import optimization.
+- **Cancelled IDE operations finish promptly** — ordinary tool calls have a 55-second execution budget and return actionable timeout errors; build/test/project-analysis long polling keeps its own budget, and `ide_open_project` / `ide_open_workspace` keep their own `timeoutSeconds`. Closed-file diagnostics now cancel their platform progress indicator and interrupt blocking waits, and editor diagnostics wait for EDT cancellably. An edit cancelled while queued for EDT cannot execute later.
+
+## [5.15.0] - 2026-09-15
+
+### Added
+
+- **Symbol handles across discovery, references, and member edits** — `ide_find_class`, `ide_find_symbol`, `ide_find_implementations`, and `ide_find_super_methods` return an opaque `symbolId` for every declaration they list, and `ide_find_references` reports one on `resolvedSymbol`. `ide_find_references`, `ide_find_implementations`, `ide_find_super_methods`, `ide_edit_member`, and `ide_replace_member` accept a top-level `symbolId` or the nested `target` selector, so a declaration discovered once can be queried and edited without repeating coordinates. Handles stay bound to their exact declaration: a reference or super-method query from a parameter handle does not retarget it to the enclosing method, and Kotlin light methods keep their published identity.
+- **Member edits return the edited declaration** — `ide_edit_member` and `ide_replace_member` return `updatedSymbol` with the current handle and location, and rebind the caller's handle to the replacement. A synthetic JVM getter/setter handle is rejected instead of editing the enclosing Kotlin property. Position and nested-position targets discover files created externally before reading PSI, even when "Sync external file changes" is disabled.
+- Anonymous implementations are reported as `<anonymous implementation of Base at File.java:line>` with `qualifiedName: null` instead of `unknown`.
+
+### Changed
+
+- **Cached search pages survive PSI edits** — pages of `ide_find_class`, `ide_find_symbol`, `ide_find_implementations`, and `ide_find_references` are still served after edits with `stale: true` instead of failing, and are never extended with results from a changed index. A page whose cached declaration no longer resolves, or whose file was deleted and recreated at the same path, fails with `SEARCH_INVALIDATED` rather than returning a substitute. `hasMore: true` without `nextCursor` now means uncached results may remain but the snapshot cannot continue safely (a stale snapshot, or the 5,000-result cache cap, which previously reported `hasMore: false`); start a narrower fresh search.
+- Search cursors are bound to the exact open project instance and the tool that created them, and expire when the MCP server restarts, matching symbol handles.
+- `ide_edit_member` validates replacement content before changing the document: it must be exactly one syntactically valid declaration of the original category, optionally surrounded by comments. Content with several declarations, a different category, syntax errors, or no declaration at all is rejected without editing; use `ide_refactor_safe_delete` to delete a member.
+- `ide_find_class` and `ide_find_symbol` report Kotlin `object` declarations as `OBJECT`.
+- Shared `project_path` and `paths` parameter descriptions were shortened to keep the `tools/list` payload within a 110 KB budget.
+
+### Fixed
+
+- **Kotlin symbol-info fallback reports the declaration** — when Quick Documentation provides no signature, `ide_symbol_info` selects the source line containing the PSI name identifier, so leading annotations and KDoc no longer replace the method declaration. Braces inside inline annotations or quoted names no longer truncate it.
+- `ide_find_symbol` reports Kotlin interfaces, enum classes, and annotation classes as `INTERFACE`, `ENUM`, and `ANNOTATION` instead of `CLASS`.
+- `ide_type_hierarchy` and `ide_find_implementations` report Java annotation types as `ANNOTATION` instead of `INTERFACE`.
+- `ide_replace_member` re-resolves the body range inside the write action, so a declaration that changed between lookup and apply is no longer edited at stale offsets.
+- Reflective Python, JavaScript/TypeScript, Go, PHP, Rust, and Kotlin lookups, and lazy search-page extension, propagate cancellation and dumb-mode transitions instead of reporting an incomplete search as empty or exhausted.
+
+## [5.14.0] - 2026-09-15
+
+### Added
+
+- `ide_change_signature` supports non-mutating dry-run previews, exact/nested symbol targets, and Kotlin JVM functions. Preview reports usage/conflict discovery and applicability; apply refuses conflicts, incomplete discovery, read-only scope, missing required caller/delegate arguments, and interactive overrider decisions. Kotlin override changes start at the base declaration and preserve the original handle. Successful apply returns updated declaration metadata.
+
+### Fixed
+
+- Change signature no longer strips existing `throws` clauses on apply.
+
+## [5.13.0] - 2026-09-14
+
+### Added
+
+- `ide_refactor_safe_delete` supports the shared non-mutating preview response and exact/nested symbol targets. Applied deletion by handle reports that handle as `invalidatedSymbolId`.
+
+### Fixed
+
+- Safe-delete previews now agree with apply for forced file deletion without declarations or complete usage discovery. Usage checks cover hierarchy overrides and Java/Kotlin method parameters without treating unrelated non-code text as a blocker or asserting on lambda, catch, and loop bindings. Kotlin light targets resolve to exact source declarations without changing the input handle's PSI identity; generated JVM methods without matching standalone source declarations are rejected. Apply also refuses deletion when resource discovery fails.
+
+## [5.12.0] - 2026-09-14
+
+### Added
+
+- `ide_refactor_rename` supports non-mutating `dryRun` previews and exact/nested symbol targets. Preview and apply share automatic rename selections and report affected declarations and usages consistently. Preview never enters the source-write phase or saves unrelated documents. Detect destination collisions when a Java class rename also renames its file, and refuse JS/TS preparation that requires an interactive choice. Include implicit class-file and directory collisions, and preview a constructor rename as the containing class rename.
+
+### Fixed
+
+- **Kotlin override renames honor `rename_base` without a chooser** — `ide_refactor_rename` resolves the base through the Kotlin light-method API off the EDT, then renames the source declaration, its overrides, and call sites. This also applies to the default strategy. Failed base discovery aborts before editing instead of opening the IDE chooser; explicit `ask` remains interactive.
+
+## [5.11.0] - 2026-09-14
+
+### Added
+
+- `ide_find_definition` and `ide_symbol_info` accept an additive nested `target` holding exactly one of `symbolId`, `position` (`file`, `line`, `column`), or `qualifiedName` + `language`. Existing top-level selectors remain supported; mixing `target` with them fails validation.
+
+## [5.10.0] - 2026-09-13
+
+### Added
+
+- `ide_find_definition` and `ide_symbol_info` return and accept opaque `symbolId` handles backed by exact PSI pointers. Handles survive line shifts and rename, expire on deletion/session reset/project close or cache eviction, and route to their owning open project. Cancellation does not expire a handle; pointer restoration does not hold shared cache locks. Preserve exact targets during definition/metadata lookup, expire handles after file replacement, and use source context for synthetic declarations without their own text.
+- `ide_diagnostics` accepts a small `files` batch of relative or in-project absolute paths with one shared deadline and fail-closed per-file coverage (`analyzed`, `timed_out`, `failed`, `skipped`, `not_analyzed`, or `not_found`) plus truncation metadata. Existing single-file and build/test-only requests remain supported. Isolate per-file analyzer failures, propagate request cancellation, report missing files explicitly, and deduplicate aliases without collapsing distinct symlink/parent paths. `maxProblems` bounds the aggregate response.
+
+### Changed
+
+- Bind-host settings now validate syntax before resolver/bind checks and normalize IDN hostnames before persistence, binding, and restart. Malformed labels and host:port input stay invalid even with wildcard DNS, while unchanged legacy hostnames and scoped IPv6 values remain usable.
+- `ide_sync_files` now validates every explicit target before refreshing anything and returns one whole-batch error listing all invalid paths instead of partial success. It accepts absolute paths inside any allowed project/content root; relative paths fall back across content roots when `project_path` is omitted or selects the project base, while a specifically selected content root remains confined.
+- Targeted synchronization now reports normalized `syncedPaths`, actual absolute `refreshedRoots`, and `deletedPaths`. Known deleted targets refresh through their nearest existing parent, new targets are discovered with shallow ancestor refreshes, and registered symlink-root spellings are preserved without recursively refreshing unrelated directories.
+
+### Fixed
+
+- Host-header protection now covers every configured bind host that resolves to loopback and accepts the standard loopback aliases plus that bind host's normalized spelling. Incoming `Host` values are never DNS-resolved.
+- The shared per-file analysis used by `ide_diagnostics` and `ide_project_diagnostics` now bounds the complete operation, including disk refresh, PSI setup, and waiting for the analysis lock. An open-editor daemon that consumes the timeout no longer starts a second batch-analysis budget.
+
+## [5.9.6] - 2026-09-09
+
+### Fixed
+
+- **Lifecycle management no longer takes your editor tabs away for good** ([#369](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/369)) — with lifecycle management enabled, a managed project whose window is unfocused goes `dormant` after `Background → Dormant` minutes (default 2) without an MCP tool call, and the dormant transition closed every open editor tab permanently: the user came back to an empty editor and rebuilt their tab set from Recent Files. The countdown itself was never stale — every tool call on a managed project already restarted it, as a new regression test now proves — but a human-plus-agent workflow has plenty of two-minute gaps (the agent thinking or running builds, the user reading a reply), so the result was that tabs vanished "right after" the last call. The dormant transition now remembers the tabs it closes (in tab order, with the selected one) and reopens them the moment the project window regains focus, or when the project is released; an MCP wake still leaves them closed, since the agent needs no editors and reopening them would spend the memory dormant freed. The remembered set is persisted, so it survives an IDE restart and a lifecycle close-and-reopen — cases where the IDE itself saved the workspace with no editors and would otherwise have lost them. Two adjacent gaps are closed as well: on an IDE restart the focus listener could be registered after the restored window had already taken focus, so a managed project sat in `background` — countdown running — while the user worked in it and went dormant two minutes later; the listener now catches up on the current focus state, and recording a reopen no longer demotes a project the focus listener has already promoted to `active`. Switching lifecycle management off in Settings now also stops countdowns that were already armed, instead of letting the last one close the editors anyway.
+- **`ide_lifecycle_log` and `mcp-lifecycle.log` say what happened, not only when** — the bare `[mcp_call] project` line was the one-off enrollment, but read like a per-call marker, which is exactly what made #369 look like a timer that was never reset. Log lines now name their event (`[mcp_call] kmo3: enroll`), and events carry an optional `detail`: enrollment states which mode it started in and the dormant rule that applies, `timer:inactivity` states how long the project had no MCP call and what started the countdown, and the new `editors_closed` / `editors_restored` events count the tabs closed and reopened. The health check's "open count below minimum" note now says such windows were closed by the user or an IDE shutdown, never by the lifecycle manager, which cannot close below the floor.
+
+## [5.9.5] - 2026-09-03
+
+### Fixed
+
+- **`ide_move_file` keeps consumers compiling on a same-package cross-module move** ([#360](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/360)) — moving a Java file between two modules (or source roots) that map the *same* package, the "extract `com.example.pkg` into its own artifact" workflow, leaves the class's fully qualified name unchanged, so a consumer's `import com.example.pkg.*;` is exactly as valid after the move as before. The IDE's move processor nevertheless re-binds every usage of the moved class, and that rewrite was reported to drop the wildcard import from consuming files, which then failed with `cannot find symbol` at the next build while the tool reported a clean success. The tool now snapshots, per file the move is about to rewrite, the imports that name the moved file's package and re-adds any that are gone afterwards (an on-demand import always; a single-class import only when the file has no wildcard for the package left, since the IDE legitimately folds single imports into one); because the package is unchanged, restoring an import restores the file's pre-move name resolution exactly. Every repair is reported in `warnings`. Moves that really change the package are untouched. On IntelliJ 2025.3 the platform itself keeps the import intact in this layout (a three-module reproduction of the issue now runs in the test suite and asserts a warning-free move), so the repair is a safety net for the IDE and plugin combinations that do drop it.
+- **`ide_move_file` warns when the destination is outside every source root** — the other half of the same workflow: moving a source file into a directory that no module owns as a source root (a freshly created Maven/Gradle module the IDE has not imported yet) succeeded silently and the file dropped out of every module's sources, so builds and code intelligence stopped seeing it. The result now carries a warning naming the destination and pointing at `ide_reload_project`, `ide_link_build_system`, and `ide_create_module`.
+
+## [5.9.4] - 2026-09-01
+
+### Fixed
+
+- **`ide_refactor_rename` no longer fails for every Kotlin symbol with "Analysis is not allowed: Called in the EDT thread"** ([#357](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/357)) — the read-only-scope pre-check added for [#310](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/issues/310) called `RenameProcessor.findUsages()` directly on the EDT. For a Kotlin target that search resolves references through the Kotlin Analysis API, which in K2 mode (the Kotlin plugin's default in current IDEs) forbids resolution on the EDT — so every Kotlin symbol rename failed before touching any file, while Java renames, which never enter the Analysis API, kept working. The pre-check search now runs the way `BaseRefactoringProcessor.run()` runs its own usage search: on a pooled thread under a read action behind the platform's modal progress (and under a plain read action when the caller is already off the EDT). `ide_change_signature` had the same pattern and is fixed the same way — its pre-check search enters the Kotlin Analysis API whenever Kotlin call sites reference the changed Java method. A cancelled pre-check search now fails open (the refactoring proceeds and `run()` repeats the search under its own cancellable progress); read-only files in scope are still reported as an actionable error exactly as before.
+
+## [5.9.3] - 2026-08-31
+
+### Changed
+
+- **Tool enable/disable moved to a new "Exposed Tools" settings page** — the "Available Tools (uncheck to disable)" checkbox list left the main settings page and now lives on a child page at Settings → Tools → Index MCP Server → Exposed Tools, mirroring the IDE's own MCP Server settings layout. The main page keeps the server host/port, history, projects mode, response format, sync, and lifecycle sections unchanged; the per-tool checkboxes, tooltips, and "Server is initializing..." guard behave exactly as before, and no stored state changes — existing per-tool enable/disable settings carry over untouched. Every reference to the old location follows the move: the error an MCP client gets when calling a disabled tool, the bundled agent skill, and the docs now all point to the Exposed Tools page.
+>>>>>>> upstream/main
+
 ## [5.9.2] - 2026-08-29
 
 ### Fixed
@@ -1214,7 +1348,21 @@
 - **Runtime**: JVM 21
 - **Transport**: HTTP+SSE with JSON-RPC 2.0
 
-[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.2...HEAD
+[Unreleased]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.17.1...HEAD
+[5.17.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.17.0...v5.17.1
+[5.17.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.16.0...v5.17.0
+[5.16.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.15.1...v5.16.0
+[5.15.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.15.0...v5.15.1
+[5.15.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.14.0...v5.15.0
+[5.14.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.13.0...v5.14.0
+[5.13.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.12.0...v5.13.0
+[5.12.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.11.0...v5.12.0
+[5.11.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.10.0...v5.11.0
+[5.10.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.6...v5.10.0
+[5.9.6]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.5...v5.9.6
+[5.9.5]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.4...v5.9.5
+[5.9.4]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.3...v5.9.4
+[5.9.3]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.2...v5.9.3
 [5.9.2]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.1...v5.9.2
 [5.9.1]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.9.0...v5.9.1
 [5.9.0]: https://github.com/hechtcarmel/jetbrains-index-mcp-plugin/compare/v5.8.4...v5.9.0

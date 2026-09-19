@@ -1,31 +1,39 @@
 package com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring
 
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ErrorMessages
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ParamNames
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ToolNames
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.SymbolIdRegistry
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.AbstractMcpTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.schema.SchemaBuilder
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models.ResolvedSymbolInfo
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.ProjectUtils
-import com.intellij.openapi.diagnostic.logger
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.util.PsiUtils
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.refactoring.BaseRefactoringProcessor
+import com.intellij.refactoring.changeSignature.OverriderMethodUsageInfo
+import com.intellij.usageView.UsageInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.jetbrains.annotations.TestOnly
 
 class ChangeSignatureTool : AbstractMcpTool() {
-
-    companion object {
-        private val LOG = logger<ChangeSignatureTool>()
-    }
 
     /**
      * Test hook replacing the `processor.run()` call, so tests can reproduce the production
@@ -37,6 +45,10 @@ class ChangeSignatureTool : AbstractMcpTool() {
     @TestOnly
     internal var processorRunHook: (() -> Unit)? = null
 
+    /** Lets behavior tests prove that incomplete reflective discovery fails closed. */
+    @TestOnly
+    internal var previewUsageSearchHook: (() -> Unit)? = null
+
     override val name = ToolNames.CHANGE_SIGNATURE
 
     override val description = """
@@ -47,6 +59,7 @@ class ChangeSignatureTool : AbstractMcpTool() {
         New parameters get a default value inserted at all call sites.
 
         Examples:
+        - By handle: {"symbolId": "<opaque-id>", "newName": "renamed"}
         - Add parameter: {"file": "src/Service.java", "line": 15, "column": 10, "newParameters": [{"oldIndex": 0, "name": "id", "type": "String"}, {"oldIndex": -1, "name": "validate", "type": "boolean", "defaultValue": "true"}]}
         - Change return type: {"file": "src/Service.java", "line": 15, "column": 10, "newReturnType": "Optional<User>"}
         - Python rename: {"file": "src/service.py", "line": 10, "column": 5, "newName": "new_service"}
@@ -54,8 +67,11 @@ class ChangeSignatureTool : AbstractMcpTool() {
 
     override val inputSchema: ToolSchema = SchemaBuilder.tool()
         .projectPath()
-        .file(description = "Path to file containing the method. REQUIRED.")
-        .lineAndColumn(required = true)
+        .target()
+        .symbolId()
+        .languageAndSymbol(required = false)
+        .file(required = false, description = "Path to file containing the method. Required with line+column; omit when symbolId is used.")
+        .lineAndColumn(required = false)
         .stringProperty(ParamNames.NEW_NAME, "New method name. Omit to keep current name.")
         .stringProperty(ParamNames.NEW_RETURN_TYPE, "New return type as a string (e.g., 'void', 'Optional<User>'). Omit to keep current.")
         .stringProperty(ParamNames.NEW_VISIBILITY, "New visibility: 'public', 'protected', 'private', or 'package-private'. Omit to keep current.")
@@ -67,6 +83,10 @@ class ChangeSignatureTool : AbstractMcpTool() {
             })
         })
         .booleanProperty(ParamNames.GENERATE_DELEGATE, "Generate a delegation method with the old signature. Default: false.")
+        .booleanProperty(
+            ParamNames.DRY_RUN,
+            "Resolve and validate the method, then discover usages/conflicts without modifying files. Default: false."
+        )
         .build()
 
     @Serializable
@@ -75,12 +95,14 @@ class ChangeSignatureTool : AbstractMcpTool() {
         val file: String,
         val message: String,
         val affectedFiles: List<String> = emptyList(),
-        val changesCount: Int = 0
+        val changesCount: Int = 0,
+        val updatedSymbol: ResolvedSymbolInfo? = null
     )
 
     private data class SignaturePreparation(
         val method: PsiMethod,
-        val relativePath: String
+        val relativePath: String,
+        val writable: Boolean
     )
 
     private data class SignatureState(
@@ -91,7 +113,7 @@ class ChangeSignatureTool : AbstractMcpTool() {
     )
 
     private data class SignatureVerification(
-        val pointer: SmartPsiElementPointer<PsiMethod>,
+        val pointer: SmartPsiElementPointer<PsiElement>,
         val before: SignatureState,
         val targetName: String?,
         val targetReturnTypeText: String?,
@@ -99,19 +121,31 @@ class ChangeSignatureTool : AbstractMcpTool() {
         val targetParameters: List<Pair<String, String>>?
     )
 
+    private data class TargetLanguageInfo(
+        val psiFile: PsiFile,
+        val virtualFile: com.intellij.openapi.vfs.VirtualFile,
+        val filePath: String,
+        val line: Int,
+        val column: Int
+    )
+
     override suspend fun doExecute(project: Project, arguments: JsonObject): CallToolResult {
-        val filePath = arguments[ParamNames.FILE]?.jsonPrimitive?.content
-            ?: return createErrorResult("Missing required parameter: file")
-        val line = arguments[ParamNames.LINE]?.jsonPrimitive?.int
-            ?: return createErrorResult("Missing required parameter: line")
-        val column = arguments[ParamNames.COLUMN]?.jsonPrimitive?.int
-            ?: return createErrorResult("Missing required parameter: column")
+        val startedAtNanos = System.nanoTime()
+        val dryRun = arguments[ParamNames.DRY_RUN]?.jsonPrimitive?.booleanOrNull == true
+        val requestedSymbolId = optionalStringArg(arguments, ParamNames.SYMBOL_ID)
+        val lookupMode = resolveLookupMode(arguments, allowSymbolId = true)
 
         val newName = arguments[ParamNames.NEW_NAME]?.jsonPrimitive?.content
         val newReturnType = arguments[ParamNames.NEW_RETURN_TYPE]?.jsonPrimitive?.content
         val newVisibility = arguments[ParamNames.NEW_VISIBILITY]?.jsonPrimitive?.content
         val newParametersJson = arguments[ParamNames.NEW_PARAMETERS]?.jsonArray
         val generateDelegate = arguments[ParamNames.GENERATE_DELEGATE]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
+
+        if (!dryRun && generateDelegate && hasNewParameterWithoutDefault(newParametersJson)) {
+            return createErrorResult(
+                "Generating a delegate requires an explicit non-blank defaultValue for every new required parameter."
+            )
+        }
 
         if (newName == null && newReturnType == null && newVisibility == null && newParametersJson == null) {
             return createErrorResult("At least one change is required: newName, newReturnType, newVisibility, or newParameters.")
@@ -121,60 +155,111 @@ class ChangeSignatureTool : AbstractMcpTool() {
             return createErrorResult("Invalid visibility: '$newVisibility'. Must be: public, protected, private, or package-private.")
         }
 
-        val virtualFile = resolveFile(project, filePath)
-            ?: return createErrorResult("File not found: $filePath")
-        ensureWritable(virtualFile)?.let { return it }
+        val coordinateFile = if (lookupMode == LookupModeState.POSITION) {
+            optionalStringArg(arguments, ParamNames.FILE)?.let { resolveFile(project, it) }
+        } else null
 
-        val psiFile = suspendingReadAction {
-            PsiManager.getInstance(project).findFile(virtualFile)
-        } ?: return createErrorResult("Cannot resolve PSI for: $filePath")
-
-        return when (psiFile.language.id) {
-            "JAVA" -> executeJavaChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newReturnType, newVisibility, newParametersJson, generateDelegate
-            )
-            "kotlin" -> executeKotlinChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newReturnType, newParametersJson
-            )
-            "Python" -> executePythonChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newParametersJson
-            )
-            "JavaScript", "TypeScript", "TypeScript JSX", "JSX Harmony", "ECMAScript 6" -> executeJsChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newReturnType, newParametersJson
-            )
-            "go" -> executeGoChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newParametersJson
-            )
-            "PHP" -> executePhpChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newReturnType, newParametersJson
-            )
-            "Rust" -> executeRustChangeSignature(
-                project, psiFile, virtualFile, filePath, line, column,
-                newName, newReturnType, newParametersJson
-            )
-            else -> createErrorResult("Change signature not supported for ${psiFile.language.displayName}. Supported: Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.")
+        val targetInfo = suspendingReadAction {
+            when (lookupMode) {
+                LookupModeState.POSITION -> {
+                    val filePath = optionalStringArg(arguments, ParamNames.FILE)
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("Missing required parameter: ${ParamNames.FILE}")
+                        )
+                    val line = arguments[ParamNames.LINE]?.jsonPrimitive?.int
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("Missing required parameter: ${ParamNames.LINE}")
+                        )
+                    val column = arguments[ParamNames.COLUMN]?.jsonPrimitive?.int
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("Missing required parameter: ${ParamNames.COLUMN}")
+                        )
+                    val virtualFile = coordinateFile
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("File not found: $filePath")
+                        )
+                    val psiFile = PsiManager.getInstance(project).findFile(virtualFile)
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("Cannot resolve PSI for: $filePath")
+                        )
+                    Result.success(TargetLanguageInfo(psiFile, virtualFile, filePath, line, column))
+                }
+                LookupModeState.SYMBOL_ID,
+                LookupModeState.SYMBOL -> {
+                    val element = resolveElementFromArguments(project, arguments, allowSymbolId = true).getOrElse {
+                        return@suspendingReadAction Result.failure<TargetLanguageInfo>(it)
+                    }
+                    val psiFile = element.containingFile
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("Target has no source file")
+                        )
+                    val virtualFile = psiFile.virtualFile
+                        ?: return@suspendingReadAction Result.failure<TargetLanguageInfo>(
+                            IllegalArgumentException("Target has no editable source file")
+                        )
+                    val filePath = ProjectUtils.getToolFilePath(project, virtualFile)
+                    val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
+                    val offset = element.textRange.startOffset
+                    val line = (document?.getLineNumber(offset) ?: 0) + 1
+                    val column = offset - (document?.getLineStartOffset(line - 1) ?: 0) + 1
+                    Result.success(TargetLanguageInfo(psiFile, virtualFile, filePath, line, column))
+                }
+                LookupModeState.CONFLICT -> Result.failure(
+                    IllegalArgumentException(
+                        if (requestedSymbolId != null) {
+                            ErrorMessages.SYMBOL_ID_AND_OTHER_TARGET_EXCLUSIVE
+                        } else {
+                            ErrorMessages.LANGUAGE_SYMBOL_AND_OTHER_TARGET_EXCLUSIVE
+                        }
+                    )
+                )
+                LookupModeState.MISSING -> Result.failure(
+                    IllegalArgumentException("Missing required parameter: ${ParamNames.FILE}")
+                )
+            }
         }
-    }
 
-    private suspend fun executeJavaChangeSignature(
-        project: Project,
-        psiFile: PsiFile,
-        virtualFile: com.intellij.openapi.vfs.VirtualFile,
-        filePath: String,
-        line: Int,
-        column: Int,
-        newName: String?,
-        newReturnType: String?,
-        newVisibility: String?,
-        newParametersJson: kotlinx.serialization.json.JsonArray?,
-        generateDelegate: Boolean
-    ): CallToolResult {
+        if (targetInfo.isFailure) {
+            return createErrorResult(targetInfo.exceptionOrNull()?.message ?: "Failed to resolve target")
+        }
+
+        val target = targetInfo.getOrThrow()
+        val languageId = target.psiFile.language.id
+
+        when (languageId) {
+            "Python" -> {
+                if (dryRun) return createErrorResult("Change signature dry run is currently supported for Java and Kotlin only.")
+                if (!target.virtualFile.isWritable) return createErrorResult("File is read-only and cannot be modified: ${target.virtualFile.path}")
+                return executePythonChangeSignature(project, target.psiFile, target.virtualFile, target.filePath, target.line, target.column, newName, newParametersJson)
+            }
+            "JavaScript", "TypeScript", "TypeScript JSX", "JSX Harmony", "ECMAScript 6" -> {
+                if (dryRun) return createErrorResult("Change signature dry run is currently supported for Java and Kotlin only.")
+                if (!target.virtualFile.isWritable) return createErrorResult("File is read-only and cannot be modified: ${target.virtualFile.path}")
+                return executeJsChangeSignature(project, target.psiFile, target.virtualFile, target.filePath, target.line, target.column, newName, newReturnType, newParametersJson)
+            }
+            "go" -> {
+                if (dryRun) return createErrorResult("Change signature dry run is currently supported for Java and Kotlin only.")
+                if (!target.virtualFile.isWritable) return createErrorResult("File is read-only and cannot be modified: ${target.virtualFile.path}")
+                return executeGoChangeSignature(project, target.psiFile, target.virtualFile, target.filePath, target.line, target.column, newName, newParametersJson)
+            }
+            "PHP" -> {
+                if (dryRun) return createErrorResult("Change signature dry run is currently supported for Java and Kotlin only.")
+                if (!target.virtualFile.isWritable) return createErrorResult("File is read-only and cannot be modified: ${target.virtualFile.path}")
+                return executePhpChangeSignature(project, target.psiFile, target.virtualFile, target.filePath, target.line, target.column, newName, newReturnType, newParametersJson)
+            }
+            "Rust" -> {
+                if (dryRun) return createErrorResult("Change signature dry run is currently supported for Java and Kotlin only.")
+                if (!target.virtualFile.isWritable) return createErrorResult("File is read-only and cannot be modified: ${target.virtualFile.path}")
+                return executeRustChangeSignature(project, target.psiFile, target.virtualFile, target.filePath, target.line, target.column, newName, newReturnType, newParametersJson)
+            }
+            "JAVA", "kotlin" -> {
+                // Handled below via IntelliJ ChangeSignatureProcessor
+            }
+            else -> {
+                return createErrorResult("Change signature not supported for ${target.psiFile.language.displayName}. Supported: Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust.")
+            }
+        }
+
         val changeSignatureProcessorClass = try {
             Class.forName("com.intellij.refactoring.changeSignature.ChangeSignatureProcessor")
         } catch (_: ClassNotFoundException) {
@@ -194,17 +279,64 @@ class ChangeSignatureTool : AbstractMcpTool() {
         }
 
         val prep = suspendingReadAction {
-            prepareChange(project, virtualFile, filePath, line, column)
+            when (lookupMode) {
+                LookupModeState.SYMBOL_ID,
+                LookupModeState.SYMBOL -> prepareChangeBySemanticTarget(
+                    project,
+                    arguments,
+                    requireWritable = !dryRun
+                )
+
+                LookupModeState.POSITION -> {
+                    if (!dryRun && !target.virtualFile.isWritable) {
+                        return@suspendingReadAction Result.failure<SignaturePreparation>(
+                            IllegalArgumentException("File is read-only and cannot be modified: ${target.virtualFile.path}")
+                        )
+                    }
+                    prepareChange(project, target.virtualFile, target.filePath, target.line, target.column, requireWritable = !dryRun)
+                }
+
+                LookupModeState.CONFLICT -> Result.failure(
+                    IllegalArgumentException(
+                        if (requestedSymbolId != null) {
+                            ErrorMessages.SYMBOL_ID_AND_OTHER_TARGET_EXCLUSIVE
+                        } else {
+                            ErrorMessages.LANGUAGE_SYMBOL_AND_OTHER_TARGET_EXCLUSIVE
+                        }
+                    )
+                )
+
+                LookupModeState.MISSING -> Result.failure(
+                    IllegalArgumentException("Missing required parameter: ${ParamNames.FILE}")
+                )
+            }
         }
 
         return when {
             prep.isFailure -> createErrorResult(prep.exceptionOrNull()?.message ?: "Failed to prepare change")
             else -> {
                 val p = prep.getOrThrow()
-                applyChange(
-                    project, p, newName, newReturnType, newVisibility, newParametersJson,
-                    generateDelegate, changeSignatureProcessorClass, javaChangeInfoImplClass, parameterInfoImplClass
-                )
+                if (dryRun) {
+                    previewChange(
+                        project = project,
+                        prep = p,
+                        newName = newName,
+                        newReturnType = newReturnType,
+                        newVisibility = newVisibility,
+                        newParametersJson = newParametersJson,
+                        generateDelegate = generateDelegate,
+                        javaChangeInfoImplClass = javaChangeInfoImplClass,
+                        parameterInfoImplClass = parameterInfoImplClass,
+                        requestedSymbolId = requestedSymbolId,
+                        startedAtNanos = startedAtNanos
+                    )
+                } else {
+                    applyChange(
+                        project, p, newName, newReturnType, newVisibility, newParametersJson,
+                        generateDelegate, changeSignatureProcessorClass, javaChangeInfoImplClass,
+                        parameterInfoImplClass, requestedSymbolId
+                    )
+                }
             }
         }
     }
@@ -475,12 +607,54 @@ class ChangeSignatureTool : AbstractMcpTool() {
         }
     }
 
+    private fun prepareChangeBySemanticTarget(
+        project: Project,
+        arguments: JsonObject,
+        requireWritable: Boolean
+    ): Result<SignaturePreparation> {
+        val element = resolveElementFromArguments(project, arguments, allowSymbolId = true).getOrElse {
+            return Result.failure(it)
+        }
+        val method = resolveSignatureMethod(element, allowParent = false)
+            ?: return Result.failure(
+                IllegalArgumentException(
+                    "Target does not identify a Java method or Kotlin function. Select a method declaration."
+                )
+            )
+        return prepareMethod(project, method, requireWritable)
+    }
+
+    private fun prepareMethod(
+        project: Project,
+        method: PsiMethod,
+        requireWritable: Boolean
+    ): Result<SignaturePreparation> {
+        // Kotlin overrides may select a base declaration in a different source file.
+        val virtualFile = method.navigationElement.containingFile?.virtualFile
+            ?: return Result.failure(
+                IllegalArgumentException(
+                    "Target has no editable source file"
+                )
+            )
+        if (requireWritable && !virtualFile.isWritable) {
+            return Result.failure(IllegalArgumentException("File is read-only and cannot be modified: ${virtualFile.path}"))
+        }
+        return Result.success(
+            SignaturePreparation(
+                method,
+                ProjectUtils.getToolFilePath(project, virtualFile),
+                virtualFile.isWritable
+            )
+        )
+    }
+
     private fun prepareChange(
         project: Project,
         virtualFile: com.intellij.openapi.vfs.VirtualFile,
         filePath: String,
         line: Int,
-        column: Int
+        column: Int,
+        requireWritable: Boolean
     ): Result<SignaturePreparation> {
         val psiFile = PsiManager.getInstance(project).findFile(virtualFile)
             ?: return Result.failure(Exception("Cannot resolve PSI for: $filePath"))
@@ -496,11 +670,290 @@ class ChangeSignatureTool : AbstractMcpTool() {
         val element = psiFile.findElementAt(offset)
             ?: return Result.failure(Exception("No element found at line $line, column $column"))
 
-        val method = PsiTreeUtil.getParentOfType(element, PsiMethod::class.java)
+        val method = resolveSignatureMethod(element, allowParent = true)
             ?: return Result.failure(Exception("No method found at line $line, column $column. Position the cursor on a method name."))
 
-        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
-        return Result.success(SignaturePreparation(method, relativePath))
+        return prepareMethod(project, method, requireWritable)
+    }
+
+    /** Kotlin's change-signature integration accepts JavaChangeInfo backed by a light method. */
+    private fun resolveSignatureMethod(element: PsiElement, allowParent: Boolean): PsiMethod? {
+        val javaMethod = if (allowParent) PsiTreeUtil.getParentOfType(element, PsiMethod::class.java, false)
+            else element as? PsiMethod
+        val source = (javaMethod ?: element).navigationElement
+        val functionClass = try {
+            Class.forName("org.jetbrains.kotlin.psi.KtNamedFunction")
+        } catch (_: ClassNotFoundException) {
+            return javaMethod
+        }
+        val function = if (allowParent) generateSequence(source) { it.parent }.firstOrNull(functionClass::isInstance)
+            else source.takeIf(functionClass::isInstance)
+        if (function == null) return javaMethod
+        val lightMethod = PsiUtils.toLightMethodsStrict(function).firstOrNull() ?: return null
+        // Resolve the base off the EDT instead of entering Kotlin's interactive target chooser.
+        return lightMethod.findDeepestSuperMethods().firstOrNull() ?: lightMethod
+    }
+
+    private suspend fun previewChange(
+        project: Project,
+        prep: SignaturePreparation,
+        newName: String?,
+        newReturnType: String?,
+        newVisibility: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?,
+        generateDelegate: Boolean,
+        javaChangeInfoImplClass: Class<*>,
+        parameterInfoImplClass: Class<*>,
+        requestedSymbolId: String?,
+        startedAtNanos: Long
+    ): CallToolResult {
+        return try {
+            val (changeInfo, verification) = suspendingReadAction {
+                buildChangeInfo(
+                    project,
+                    prep.method,
+                    newName,
+                    newReturnType,
+                    newVisibility,
+                    newParametersJson,
+                    generateDelegate,
+                    javaChangeInfoImplClass,
+                    parameterInfoImplClass
+                )
+            }
+            val warnings = mutableListOf<String>()
+            val affectedFiles = linkedSetOf(prep.relativePath)
+            var usages = emptyArray<UsageInfo>()
+            var conflicts = emptyList<String>()
+            var discoveryComplete = true
+
+            try {
+                previewUsageSearchHook?.invoke()
+                usages = RefactoringScopeGuard.computeUsagesOffEdtStrict(project) {
+                    RefactoringScopeGuard.findChangeSignatureUsagesReflectivelyStrict(changeInfo)
+                }
+                // ChangeSignatureProcessorBase delegates extension conflicts through
+                // ActionUtil.underModalProgress. It must not be entered while this coroutine
+                // owns a read lock: the modal worker may itself need read/write access and the
+                // EDT then deadlocks waiting for that worker. Running it on EDT without an
+                // enclosing read action matches the platform processor's own call path.
+                val conflictResult = edtAction {
+                    RefactoringScopeGuard.collectChangeSignatureConflictsReflectively(
+                        changeInfo,
+                        usages
+                    )
+                }
+                // Conflict extensions receive a mutable Ref<Array<UsageInfo>>, but Java's
+                // processor restores this original usage snapshot before apply. The helper keeps
+                // preview metadata aligned with that actual edit scope.
+                usages = conflictResult.usages
+                val scopeMetadata = suspendingReadAction {
+                    val usageFiles = usages.mapNotNullTo(linkedSetOf()) { usage ->
+                        usage.virtualFile?.let { ProjectUtils.getToolFilePath(project, it) }
+                    }
+                    usageFiles to RefactoringScopeGuard.readOnlyFilesIn(project, usages)
+                }
+                conflicts = conflictResult.conflicts
+                affectedFiles.addAll(scopeMetadata.first)
+                warnings.addAll(conflicts)
+                if (scopeMetadata.second.isNotEmpty()) {
+                    warnings.add(RefactoringScopeGuard.blockedMessage(scopeMetadata.second))
+                }
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                discoveryComplete = false
+                val cause = (e as? java.lang.reflect.InvocationTargetException)?.cause ?: e
+                warnings.add(
+                    "Usage/conflict discovery failed: ${cause.message ?: cause.javaClass.simpleName}. " +
+                        "The preview is not safe to apply."
+                )
+            }
+
+            if (!prep.writable) {
+                warnings.add("Target file is read-only; the change signature operation cannot be applied.")
+            }
+            val safetyWarnings = applicabilityWarnings(
+                verification,
+                usages,
+                newParametersJson,
+                generateDelegate
+            )
+            warnings.addAll(safetyWarnings)
+            val target = suspendingReadAction {
+                val source = PsiUtils.resolveNavigationTarget(prep.method)
+                val matchingId = requestedSymbolId?.takeIf { id ->
+                    SymbolIdRegistry.getInstance().resolve(project, id).getOrNull()
+                        ?.let(PsiUtils::resolveNavigationTarget) == source
+                }
+                // A preview of a base declaration must not rebind an override's live handle.
+                resolvedSymbolInfo(project, source, matchingId)
+            }
+            val hasReadOnlyScope = warnings.any { it.startsWith("Blocked by read-only files") }
+            createJsonResult(
+                refactoringPreview(
+                    canApply = discoveryComplete && prep.writable && !hasReadOnlyScope &&
+                        conflicts.isEmpty() && safetyWarnings.isEmpty(),
+                    target = target,
+                    plannedChange = buildJsonObject {
+                        put("operation", "changeSignature")
+                        put("before", signatureStateJson(verification.before))
+                        put("requested", buildJsonObject {
+                            newName?.let { put("newName", it) }
+                            newReturnType?.let { put("newReturnType", it) }
+                            newVisibility?.let { put("newVisibility", it) }
+                            newParametersJson?.let { put("newParameters", it) }
+                            put("generateDelegate", generateDelegate)
+                        })
+                    },
+                    affectedFiles = affectedFiles,
+                    usageCount = usages.size,
+                    conflictCount = conflicts.size,
+                    warnings = warnings,
+                    startedAtNanos = startedAtNanos
+                )
+            )
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
+            createErrorResult(
+                "Change signature preview failed: ${cause.message}",
+                ToolNames.DIAGNOSTICS
+            )
+        }
+    }
+
+    private fun signatureStateJson(state: SignatureState): JsonObject = buildJsonObject {
+        put("name", state.name)
+        state.returnTypeText?.let { put("returnType", it) }
+        put("visibility", state.visibility)
+        put("parameters", buildJsonArray {
+            for ((name, type) in state.parameters) {
+                add(buildJsonObject {
+                    put("name", name)
+                    put("type", type)
+                })
+            }
+        })
+    }
+
+    private fun buildChangeInfo(
+        project: Project,
+        method: PsiMethod,
+        newName: String?,
+        newReturnType: String?,
+        newVisibility: String?,
+        newParametersJson: kotlinx.serialization.json.JsonArray?,
+        generateDelegate: Boolean,
+        javaChangeInfoImplClass: Class<*>,
+        parameterInfoImplClass: Class<*>
+    ): Pair<Any, SignatureVerification> {
+        val factory = JavaPsiFacade.getElementFactory(project)
+        val effectiveName = newName ?: method.name
+        val canonicalTypesClass = Class.forName("com.intellij.refactoring.util.CanonicalTypes")
+        val createMethod = canonicalTypesClass.getMethod("createTypeWrapper", PsiType::class.java)
+
+        val requestedReturnPsiType = newReturnType?.let { factory.createTypeFromText(it, method) }
+        val effectiveReturnType = if (requestedReturnPsiType != null) {
+            createMethod.invoke(null, requestedReturnPsiType)
+        } else {
+            method.returnType?.let { createMethod.invoke(null, it) }
+        }
+        val effectiveVisibility = when (newVisibility) {
+            "public" -> PsiModifier.PUBLIC
+            "protected" -> PsiModifier.PROTECTED
+            "private" -> PsiModifier.PRIVATE
+            "package-private", "package-local" -> PsiModifier.PACKAGE_LOCAL
+            else -> currentVisibility(method)
+        }
+        val paramInfos = if (newParametersJson != null) {
+            buildParameterInfos(method, newParametersJson, parameterInfoImplClass, factory).getOrThrow()
+        } else {
+            buildCurrentParameterInfos(method, parameterInfoImplClass)
+        }
+
+        val thrownExceptions = extractThrownExceptions(method)
+        val canonicalTypeClass = Class.forName("com.intellij.refactoring.util.CanonicalTypes\$Type")
+        val constructor = javaChangeInfoImplClass.getConstructor(
+            String::class.java,
+            PsiMethod::class.java,
+            String::class.java,
+            canonicalTypeClass,
+            paramInfos.javaClass,
+            thrownExceptions.javaClass,
+            Boolean::class.java,
+            Set::class.java,
+            Set::class.java
+        )
+        val changeInfo = constructor.newInstance(
+            effectiveVisibility,
+            method,
+            effectiveName,
+            effectiveReturnType,
+            paramInfos,
+            thrownExceptions,
+            generateDelegate,
+            emptySet<PsiMethod>(),
+            emptySet<PsiMethod>()
+        )
+        val verification = SignatureVerification(
+            pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer(method.navigationElement),
+            before = captureSignatureState(method),
+            targetName = newName,
+            targetReturnTypeText = requestedReturnPsiType?.canonicalText,
+            targetVisibility = if (newVisibility != null) effectiveVisibility else null,
+            targetParameters = newParametersJson?.map { parameterJson ->
+                val parameter = parameterJson.jsonObject
+                val parameterName = parameter["name"]!!.jsonPrimitive.content
+                val parameterType = factory.createTypeFromText(
+                    parameter["type"]!!.jsonPrimitive.content,
+                    method
+                )
+                parameterName to parameterType.canonicalText
+            }
+        )
+        return changeInfo to verification
+    }
+
+    /**
+     * Keeps Java's existing throws contract when an unrelated part of a signature changes.
+     *
+     * The Java plugin owns the concrete exception-info representation. In particular, current
+     * platform versions use a `PsiClassType` constructor rather than the historical `PsiType`
+     * one, so synthesising these objects reflectively is version-fragile. Use its public helper
+     * instead while keeping the Java-plugin dependency optional at class-load time.
+     *
+     * Do not substitute an empty array when this fails: applying that fallback silently removes
+     * source-level throws declarations. Unwrap cancellation and errors so normal IDE control flow
+     * and fatal failures retain their usual semantics.
+     */
+    private fun extractThrownExceptions(method: PsiMethod): Any {
+        val javaThrownExceptionInfoClass = Class.forName(
+            "com.intellij.refactoring.changeSignature.JavaThrownExceptionInfo"
+        )
+        val extractMethod = javaThrownExceptionInfoClass.getMethod(
+            "extractExceptions",
+            PsiMethod::class.java
+        )
+        return try {
+            requireNotNull(extractMethod.invoke(null, method)) {
+                "JavaThrownExceptionInfo.extractExceptions returned null"
+            }
+        } catch (exception: java.lang.reflect.InvocationTargetException) {
+            throw exception.cause ?: exception
+        }
+    }
+
+    private fun instantiateProcessor(
+        project: Project,
+        changeSignatureProcessorClass: Class<*>,
+        changeInfo: Any
+    ): BaseRefactoringProcessor {
+        val changeInfoClass = Class.forName("com.intellij.refactoring.changeSignature.JavaChangeInfo")
+        return changeSignatureProcessorClass
+            .getConstructor(Project::class.java, changeInfoClass)
+            .newInstance(project, changeInfo) as BaseRefactoringProcessor
     }
 
     private suspend fun applyChange(
@@ -513,129 +966,68 @@ class ChangeSignatureTool : AbstractMcpTool() {
         generateDelegate: Boolean,
         changeSignatureProcessorClass: Class<*>,
         javaChangeInfoImplClass: Class<*>,
-        parameterInfoImplClass: Class<*>
+        parameterInfoImplClass: Class<*>,
+        requestedSymbolId: String?
     ): CallToolResult {
         return try {
             val method = prep.method
 
             val (changeInfo, verification) = suspendingReadAction {
-                val factory = JavaPsiFacade.getElementFactory(project)
-
-                val effectiveName = newName ?: method.name
-                val canonicalTypesClass = Class.forName("com.intellij.refactoring.util.CanonicalTypes")
-                val createMethod = canonicalTypesClass.getMethod("createTypeWrapper", PsiType::class.java)
-
-                val requestedReturnPsiType = newReturnType?.let { factory.createTypeFromText(it, method) }
-                val effectiveReturnType = if (requestedReturnPsiType != null) {
-                    createMethod.invoke(null, requestedReturnPsiType)
-                } else {
-                    if (method.returnType != null) createMethod.invoke(null, method.returnType) else null
-                }
-
-                val effectiveVisibility = when (newVisibility) {
-                    "public" -> PsiModifier.PUBLIC
-                    "protected" -> PsiModifier.PROTECTED
-                    "private" -> PsiModifier.PRIVATE
-                    "package-private", "package-local" -> PsiModifier.PACKAGE_LOCAL
-                    else -> currentVisibility(method)
-                }
-
-                val paramInfos = if (newParametersJson != null) {
-                    buildParameterInfos(method, newParametersJson, parameterInfoImplClass, factory)
-                        .getOrThrow()
-                } else {
-                    buildCurrentParameterInfos(method, parameterInfoImplClass)
-                }
-
-                val changeInfoClass = Class.forName("com.intellij.refactoring.changeSignature.JavaChangeInfo")
-                val thrownExceptionInfoClass = Class.forName("com.intellij.refactoring.changeSignature.ThrownExceptionInfo")
-                val thrownExceptions = try {
-                    val javaThrownExceptionInfoClass = Class.forName("com.intellij.refactoring.changeSignature.JavaThrownExceptionInfo")
-                    val existingThrows = method.throwsList.referenceElements
-                    if (existingThrows.isEmpty()) {
-                        java.lang.reflect.Array.newInstance(thrownExceptionInfoClass, 0)
-                    } else {
-                        val arr = java.lang.reflect.Array.newInstance(thrownExceptionInfoClass, existingThrows.size)
-                        for ((i, ref) in existingThrows.withIndex()) {
-                            val psiType = ref.resolve()?.let { resolved ->
-                                if (resolved is PsiClass) {
-                                    JavaPsiFacade.getElementFactory(project).createType(resolved)
-                                } else null
-                            } ?: PsiElementFactory.getInstance(project).createTypeFromText(ref.qualifiedName, method)
-                            val info = javaThrownExceptionInfoClass.getConstructor(Integer.TYPE, PsiType::class.java)
-                                .newInstance(i, psiType)
-                            java.lang.reflect.Array.set(arr, i, info)
-                        }
-                        arr
-                    }
-                } catch (e: Exception) {
-                    LOG.warn("Could not preserve throws declarations, falling back to empty: ${e.message}")
-                    java.lang.reflect.Array.newInstance(thrownExceptionInfoClass, 0)
-                }
-                val canonicalTypeClass = Class.forName("com.intellij.refactoring.util.CanonicalTypes\$Type")
-
-                val constructor = javaChangeInfoImplClass.getConstructor(
-                    String::class.java,
-                    PsiMethod::class.java,
-                    String::class.java,
-                    canonicalTypeClass,
-                    paramInfos.javaClass,
-                    thrownExceptions.javaClass,
-                    Boolean::class.java,
-                    Set::class.java,
-                    Set::class.java
-                )
-
-                val newChangeInfo = constructor.newInstance(
-                    effectiveVisibility,
+                buildChangeInfo(
+                    project,
                     method,
-                    effectiveName,
-                    effectiveReturnType,
-                    paramInfos,
-                    thrownExceptions,
+                    newName,
+                    newReturnType,
+                    newVisibility,
+                    newParametersJson,
                     generateDelegate,
-                    emptySet<PsiMethod>(),
-                    emptySet<PsiMethod>()
-                )
-
-                newChangeInfo to SignatureVerification(
-                    pointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer(method),
-                    before = captureSignatureState(method),
-                    targetName = newName,
-                    targetReturnTypeText = requestedReturnPsiType?.canonicalText,
-                    targetVisibility = if (newVisibility != null) effectiveVisibility else null,
-                    targetParameters = newParametersJson?.map { paramJson ->
-                        val obj = paramJson.jsonObject
-                        val paramName = obj["name"]!!.jsonPrimitive.content
-                        val paramType = factory.createTypeFromText(obj["type"]!!.jsonPrimitive.content, method)
-                        paramName to paramType.canonicalText
-                    }
+                    javaChangeInfoImplClass,
+                    parameterInfoImplClass
                 )
             }
 
-            val changeInfoClass = Class.forName("com.intellij.refactoring.changeSignature.JavaChangeInfo")
             val affectedFiles = mutableSetOf<String>()
 
             edtAction {
                 val docManager = FileDocumentManager.getInstance()
                 val unsavedBefore = docManager.unsavedDocuments.toSet()
 
-                val processor = changeSignatureProcessorClass
-                    .getConstructor(Project::class.java, changeInfoClass)
-                    .newInstance(project, changeInfo) as com.intellij.refactoring.BaseRefactoringProcessor
+                val processor = instantiateProcessor(project, changeSignatureProcessorClass, changeInfo)
 
                 processor.setPreviewUsages(false)
 
                 // Pre-check the full refactoring scope for read-only files (issue #310):
                 // run() would route them through ReadonlyStatusHandler's modal dialog,
-                // blocking the EDT in headless MCP sessions. Fails open when
-                // findUsages() cannot be invoked reflectively.
-                val usages = RefactoringScopeGuard.findUsagesReflectively(processor)
-                val readOnlyInScope = usages
-                    ?.let { RefactoringScopeGuard.readOnlyFilesIn(project, it) }
-                    .orEmpty()
+                // blocking the EDT in headless MCP sessions. Strict usage discovery
+                // propagates failures. The search runs off
+                // the EDT (issue #357): Kotlin call sites of the changed method are
+                // searched through the Kotlin plugin, whose K2 Analysis API forbids
+                // resolution on the EDT.
+                val usages = RefactoringScopeGuard.computeUsagesOffEdtStrict(project) {
+                    RefactoringScopeGuard.findChangeSignatureUsagesReflectivelyStrict(changeInfo)
+                }
+                val readOnlyInScope = ReadAction.compute<List<String>, RuntimeException> {
+                    RefactoringScopeGuard.readOnlyFilesIn(project, usages)
+                }
                 if (readOnlyInScope.isNotEmpty()) {
                     throw Exception(RefactoringScopeGuard.blockedMessage(readOnlyInScope))
+                }
+                val conflicts = RefactoringScopeGuard.collectChangeSignatureConflictsReflectively(
+                    changeInfo,
+                    usages
+                ).conflicts
+                val warnings = applicabilityWarnings(
+                    verification,
+                    usages,
+                    newParametersJson,
+                    generateDelegate
+                )
+                if (conflicts.isNotEmpty() || warnings.isNotEmpty()) {
+                    throw Exception(
+                        "Change signature cannot be applied safely headlessly: " +
+                            (conflicts + warnings).joinToString(" ") +
+                            " Run the same request with dryRun=true and resolve the reported issues before applying."
+                    )
                 }
 
                 val hook = processorRunHook
@@ -666,12 +1058,23 @@ class ChangeSignatureTool : AbstractMcpTool() {
                         "(read-only file, unwritable elements, or indexing in progress)."
                 )
             } else {
+                val updatedSymbol = suspendingReadAction {
+                    val originalTarget = requestedSymbolId?.let {
+                        SymbolIdRegistry.getInstance().resolve(project, it).getOrNull()
+                    }
+                    if (originalTarget != null) {
+                        resolvedSymbolInfo(project, originalTarget, requestedSymbolId)
+                    } else {
+                        verification.pointer.element?.let { resolvedSymbolInfo(project, it) }
+                    }
+                }
                 createJsonResult(ChangeSignatureResult(
                     success = true,
                     file = prep.relativePath,
-                    message = "Changed signature of '${method.name}'",
+                    message = "Changed signature of '${verification.targetName ?: verification.before.name}'",
                     affectedFiles = affectedFiles.toList(),
-                    changesCount = affectedFiles.size
+                    changesCount = affectedFiles.size,
+                    updatedSymbol = updatedSymbol
                 ))
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
@@ -725,15 +1128,82 @@ class ChangeSignatureTool : AbstractMcpTool() {
         else -> PsiModifier.PACKAGE_LOCAL
     }
 
+    private fun hasNewParameterWithoutDefault(
+        parametersJson: kotlinx.serialization.json.JsonArray?
+    ): Boolean = parametersJson?.any { parameterJson ->
+        val parameter = parameterJson.jsonObject
+        parameter["oldIndex"]?.jsonPrimitive?.int == -1 &&
+            parameter["type"]?.jsonPrimitive?.contentOrNull?.trim()?.endsWith("...") != true &&
+            parameter["defaultValue"]?.jsonPrimitive?.contentOrNull?.isNotBlank() != true
+    } == true
+
+    private fun applicabilityWarnings(
+        verification: SignatureVerification,
+        usages: Array<UsageInfo>,
+        newParametersJson: kotlinx.serialization.json.JsonArray?,
+        generateDelegate: Boolean
+    ): List<String> {
+        val warnings = mutableListOf<String>()
+        // Java exposes OverriderMethodUsageInfo for declarations whose signatures move with the
+        // base method. Every other usage may need an inserted argument at an actual call site.
+        val hasOverriderUsages = usages.any { it is OverriderMethodUsageInfo<*> }
+        val needsInsertedArguments = generateDelegate || usages.any { it !is OverriderMethodUsageInfo<*> }
+        if (needsInsertedArguments && hasNewParameterWithoutDefault(newParametersJson)) {
+            warnings.add(
+                if (generateDelegate) {
+                    "Generating a delegate requires an explicit non-blank defaultValue for every new required parameter."
+                } else {
+                    "A new parameter has no explicit non-blank defaultValue while call sites exist; " +
+                        "the IDE would leave required arguments missing, producing non-compiling callers."
+                }
+            )
+        }
+
+        val narrowsVisibility = hasOverriderUsages &&
+            verification.targetVisibility?.let { requestedVisibility ->
+                val requestedRank = visibilityRank(requestedVisibility)
+                val currentRank = visibilityRank(verification.before.visibility)
+                requestedRank >= 0 && currentRank >= 0 && requestedRank < currentRank
+            } == true
+        if (narrowsVisibility) {
+            warnings.add(
+                "Narrowing visibility while overriding methods exist may require an interactive confirmation."
+            )
+        }
+
+        val changesReturnTypeWithOverriders = hasOverriderUsages &&
+            verification.targetReturnTypeText?.let { it != verification.before.returnTypeText } == true
+        if (changesReturnTypeWithOverriders) {
+            warnings.add(
+                "Changing the return type while overriding methods exist may require an interactive " +
+                    "covariant-overrider choice. This guard conservatively rejects all return-type changes " +
+                    "with overriders, including ones whose narrower return types could safely be retained."
+            )
+        }
+        return warnings
+    }
+
+    private fun visibilityRank(visibility: String): Int = when (visibility) {
+        PsiModifier.PRIVATE -> 0
+        PsiModifier.PACKAGE_LOCAL, "package-private", "package-local" -> 1
+        PsiModifier.PROTECTED -> 2
+        PsiModifier.PUBLIC -> 3
+        else -> -1
+    }
+
     private fun captureSignatureState(method: PsiMethod): SignatureState = SignatureState(
         name = method.name,
         returnTypeText = method.returnType?.canonicalText,
-        visibility = currentVisibility(method),
+        visibility = currentVisibility(method).let {
+            if (it == PsiModifier.PACKAGE_LOCAL) "package-private" else it
+        },
         parameters = method.parameterList.parameters.map { it.name to it.type.canonicalText }
     )
 
     private fun anyRequestedAspectApplied(verification: SignatureVerification): Boolean {
-        val method = verification.pointer.element ?: return true
+        val source = verification.pointer.element ?: return true
+        // Kotlin light methods cache the old signature. Resolve a fresh JVM view from the source.
+        val method = resolveSignatureMethod(source, allowParent = false) ?: return true
         val after = captureSignatureState(method)
         val before = verification.before
         val aspects = listOfNotNull(
@@ -744,7 +1214,7 @@ class ChangeSignatureTool : AbstractMcpTool() {
                 after.returnTypeText == it || after.returnTypeText != before.returnTypeText
             },
             verification.targetVisibility?.let {
-                after.visibility == it || after.visibility != before.visibility
+                visibilityRank(after.visibility) == visibilityRank(it) || after.visibility != before.visibility
             },
             verification.targetParameters?.let {
                 after.parameters == it || after.parameters != before.parameters
@@ -765,77 +1235,6 @@ class ChangeSignatureTool : AbstractMcpTool() {
         return array
     }
 
-    private suspend fun executeKotlinChangeSignature(
-        project: Project,
-        psiFile: PsiFile,
-        virtualFile: com.intellij.openapi.vfs.VirtualFile,
-        filePath: String,
-        line: Int,
-        column: Int,
-        newName: String?,
-        newReturnType: String?,
-        newParametersJson: kotlinx.serialization.json.JsonArray?
-    ): CallToolResult {
-        val ktFunctionClass = try {
-            Class.forName("org.jetbrains.kotlin.psi.KtFunction")
-        } catch (_: ClassNotFoundException) {
-            return createErrorResult("Change signature not available — requires Kotlin plugin.")
-        }
-
-        val ktFunction = suspendingReadAction {
-            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return@suspendingReadAction null
-            if (line < 1 || line > document.lineCount) return@suspendingReadAction null
-            val offset = document.getLineStartOffset(line - 1) + (column - 1).coerceAtLeast(0)
-            val element = psiFile.findElementAt(offset) ?: return@suspendingReadAction null
-            PsiTreeUtil.getParentOfType(element, ktFunctionClass as Class<out PsiElement>)
-        } ?: return createErrorResult("No Kotlin function found at line $line, column $column. Position the cursor on a function name.")
-
-        val relativePath = ProjectUtils.getToolFilePath(project, virtualFile)
-
-        return try {
-            val kotlinProcClass = try {
-                Class.forName("org.jetbrains.kotlin.idea.refactoring.changeSignature.KotlinChangeSignatureProcessor")
-            } catch (_: ClassNotFoundException) {
-                null
-            }
-
-            if (kotlinProcClass != null) {
-                val currentName = ktFunction.javaClass.getMethod("getName").invoke(ktFunction) as? String ?: ""
-                val targetName = newName ?: currentName
-
-                val procCtor = kotlinProcClass.constructors.firstOrNull { ctor ->
-                    ctor.parameterCount >= 2 && ctor.parameterTypes[0] == Project::class.java
-                }
-                if (procCtor != null) {
-                    val (processor, affectedFiles) = suspendingReadAction {
-                        val proc = procCtor.newInstance(project, ktFunction, targetName) as com.intellij.refactoring.BaseRefactoringProcessor
-                        proc to relativePath
-                    }
-
-                    edtAction {
-                        processor.setPreviewUsages(false)
-                        val hook = processorRunHook
-                        if (hook != null) hook() else processor.run()
-                        PsiDocumentManager.getInstance(project).commitAllDocuments()
-                        FileDocumentManager.getInstance().saveAllDocuments()
-                    }
-
-                    return createJsonResult(ChangeSignatureResult(
-                        success = true,
-                        file = affectedFiles,
-                        message = "Changed Kotlin signature of function",
-                        affectedFiles = listOf(affectedFiles),
-                        changesCount = 1
-                    ))
-                }
-            }
-
-            createErrorResult("Kotlin change signature processor not available.")
-        } catch (e: Throwable) {
-            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause ?: e else e
-            createErrorResult("Kotlin change signature failed: ${cause.message}")
-        }
-    }
 
     private suspend fun executeGoChangeSignature(
         project: Project,

@@ -2,6 +2,8 @@ package com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.models
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
+import com.intellij.psi.PsiElement
 
 @Serializable
 data class PositionInput(
@@ -29,11 +31,15 @@ data class UsageLocation(
  */
 @Serializable
 data class ResolvedSymbolInfo(
+    val symbolId: String,
     val name: String?,
     val kind: String?,
     val container: String?,
     val file: String?,
-    val line: Int?
+    val line: Int?,
+    val column: Int? = null,
+    val qualifiedName: String? = null,
+    val language: String? = null
 )
 
 @Serializable
@@ -56,6 +62,7 @@ data class FindUsagesResult(
 // find_definition output
 @Serializable
 data class DefinitionResult(
+    val symbolId: String,
     val file: String,
     val line: Int,
     val column: Int,
@@ -94,6 +101,7 @@ data class SymbolParameterInfo(
  */
 @Serializable
 data class SymbolInfoResult(
+    val symbolId: String,
     val name: String,
     val kind: String?,
     val qualifiedName: String?,
@@ -132,7 +140,22 @@ data class ReadFileResult(
 data class TypeHierarchyResult(
     val element: TypeElement,
     val supertypes: List<TypeElement>,
-    val subtypes: List<TypeElement>
+    val subtypes: List<TypeElement>,
+    /** Exact breadth-first wire order; legacy direction-specific arrays remain for compatibility. */
+    val traversal: List<TypeHierarchyTraversalNode> = emptyList(),
+    val returnedNodes: Int = 0,
+    val truncated: Boolean = false,
+    val elapsedMs: Long = 0,
+    val hasMore: Boolean = false,
+    val cursor: String? = null,
+    /** Terminal resource limit: results remain usable, but the query must be narrowed to continue. */
+    val truncationReason: String? = null
+)
+
+@Serializable
+data class TypeHierarchyTraversalNode(
+    val direction: String,
+    val element: TypeElement
 )
 
 @Serializable
@@ -141,14 +164,25 @@ data class TypeElement(
     val file: String?,
     val kind: String,
     val language: String? = null,
-    val supertypes: List<TypeElement>? = null
+    val symbolId: String? = null,
+    val supertypes: List<TypeElement>? = null,
+    /** Traversal-local identity, independent of non-canonical symbol handles. */
+    val nodeId: String? = null,
+    val parentId: String? = null,
+    val depth: Int? = null
 )
 
 // call_hierarchy output
 @Serializable
 data class CallHierarchyResult(
     val element: CallElement,
-    val calls: List<CallElement>
+    val calls: List<CallElement>,
+    val returnedNodes: Int = 0,
+    val truncated: Boolean = false,
+    val elapsedMs: Long = 0,
+    val hasMore: Boolean = false,
+    val cursor: String? = null,
+    val truncationReason: String? = null
 )
 
 @Serializable
@@ -158,7 +192,12 @@ data class CallElement(
     val line: Int,
     val column: Int,
     val language: String? = null,
-    val children: List<CallElement>? = null
+    val symbolId: String? = null,
+    val children: List<CallElement>? = null,
+    /** Parent in the breadth-first discovery tree; stable across pages and handle eviction. */
+    val nodeId: String? = null,
+    val parentId: String? = null,
+    val depth: Int? = null
 )
 
 // find_implementations output
@@ -181,21 +220,38 @@ data class ImplementationLocation(
     val line: Int,
     val column: Int,
     val kind: String,
-    val language: String? = null
+    val language: String? = null,
+    val qualifiedName: String? = null,
+    val symbolId: String? = null,
+    @Transient internal val pointerTarget: PsiElement? = null
 )
 
 
 // ide_diagnostics output
 @Serializable
+data class FileDiagnosticsAnalysis(
+    val file: String,
+    val state: String,
+    val reason: String? = null,
+    val mode: String? = null,
+    /** Problems from this file included in the aggregate response, not its total problem count. */
+    val problemCount: Int = 0,
+    /** Collected problems omitted by the response cap; independent of the coverage state. */
+    val problemsTruncated: Boolean = false
+)
+
+@Serializable
 data class DiagnosticsResult(
     val problems: List<ProblemInfo>? = null,
     val intentions: List<IntentionInfo>? = null,
     val problemCount: Int? = null,
+    val problemsTruncated: Boolean? = null,
     val intentionCount: Int? = null,
     val analysisFresh: Boolean? = null,
     val analysisTimedOut: Boolean? = null,
     val analysisMessage: String? = null,
     val analysisMode: String? = null,
+    val fileAnalyses: List<FileDiagnosticsAnalysis>? = null,
     val buildErrors: List<BuildMessage>? = null,
     val buildErrorCount: Int? = null,
     val buildWarningCount: Int? = null,
@@ -295,7 +351,9 @@ data class RefactoringResult(
     val changesCount: Int,
     val message: String,
     val warnings: List<String>? = null,
-    val unretargetedImporters: List<String>? = null
+    val unretargetedImporters: List<String>? = null,
+    val updatedSymbol: ResolvedSymbolInfo? = null,
+    val invalidatedSymbolId: String? = null
 )
 
 
@@ -312,7 +370,9 @@ data class IndexStatusResult(
 data class SyncFilesResult(
     val syncedPaths: List<String>,
     val syncedAll: Boolean,
-    val message: String
+    val message: String,
+    val refreshedRoots: List<String> = emptyList(),
+    val deletedPaths: List<String> = emptyList()
 )
 
 // ide_build_project output
@@ -353,6 +413,7 @@ data class FindSymbolResult(
 
 @Serializable
 data class SymbolMatch(
+    val symbolId: String,
     val name: String,
     val qualifiedName: String?,
     val kind: String,
@@ -360,7 +421,8 @@ data class SymbolMatch(
     val line: Int,
     val column: Int,
     val containerName: String?,
-    val language: String? = null
+    val language: String? = null,
+    @Transient internal val pointerTarget: PsiElement? = null
 )
 
 // ide_find_super_methods output
@@ -379,7 +441,8 @@ data class MethodInfo(
     val file: String,
     val line: Int,
     val column: Int,
-    val language: String? = null
+    val language: String? = null,
+    val symbolId: String? = null
 )
 
 @Serializable
@@ -393,7 +456,8 @@ data class SuperMethodInfo(
     val column: Int?,
     val isInterface: Boolean,
     val depth: Int,
-    val language: String? = null
+    val language: String? = null,
+    val symbolId: String? = null
 )
 
 // ide_find_class output (reuses SymbolMatch)

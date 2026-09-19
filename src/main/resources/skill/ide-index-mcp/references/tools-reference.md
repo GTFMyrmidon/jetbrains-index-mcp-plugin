@@ -13,6 +13,10 @@ Complete parameter reference for all IDE MCP tools. All tools use JSON-RPC via M
 | `language` | string | Language of the symbol (e.g., `"Java"`, `"PHP"`). Required when using `symbol`. |
 | `symbol` | string | Fully qualified symbol reference. Java format: `com.example.ClassName`, `com.example.ClassName#memberName`. PHP format: `\\App\\Service\\UserService`, `\\App\\Service\\UserService::method()`, `\\App\\Service\\UserService::CONSTANT`, `\\App\\Service\\UserService::$property`, `\\App\\Service\\StatusEnum::ACTIVE`. PHP properties require the `$property` form; plain `::name` resolves enum cases (on enum types), constants, or methods. Python format: see **Python symbol grammar** below. |
 
+**Handle identity:** Definition and metadata lookups preserve the exact stored PSI target.
+Declarations without their own source text use a source-context preview. Deleting and recreating
+a file at the same path expires its old handles; rediscover it after `SYMBOL_ID_EXPIRED`.
+
 **Symbol reference:** Some tools accept `language` + `symbol` as an alternative to `file` + `line` + `column`. The two groups are **mutually exclusive**. Supported languages: Java, PHP, JavaScript, TypeScript, Python. Unsupported languages are rejected explicitly; use `file` + `line` + `column` for other languages.
 
 **Python symbol grammar:** Symbols must be module-qualified (dotted path with ≥2 segments):
@@ -59,10 +63,12 @@ Parse the `text` field as JSON for structured data.
 ### ide_find_references
 Find all usages of a symbol (semantic, not text search).
 
-**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+**Target for a fresh search (mutually exclusive):** top-level `symbolId` OR `file`+`line`+`column` OR `language`+`symbol`; this tool also accepts the equivalent nested `target`. Pagination requests pass `cursor` instead.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `target` | object | conditional | Exactly one of `symbolId`, `position` (`file`, `line`, `column`), or `qualifiedName` + `language`. Do not combine with top-level selectors. |
+| `symbolId` | string | conditional | Exact declaration handle from a previous result. |
 | `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
 | `line` | integer | conditional | 1-based line. Required for position-based lookup. |
 | `column` | integer | conditional | 1-based column. Required for position-based lookup. |
@@ -77,17 +83,19 @@ Find all usages of a symbol (semantic, not text search).
 | `project_path` | string | no | Project root path |
 
 **Returns**: `{ usages: [{ file, line, column, context, type, astPath }], totalCount, totalIsExact, resolvedSymbol, truncated, nextCursor?, hasMore, totalCollected, offset, pageSize, stale }`
-**Pagination note**: `truncated` mirrors `hasMore`; when `hasMore` is `true`, pass `nextCursor` to fetch the next page.
-**Resolution note**: `resolvedSymbol` echoes the declaration that was actually searched — positions on comments or whitespace snap to the nearest enclosing named element, so check it matches the symbol you intended. When `totalIsExact` is `false`, `totalCount` is a lower bound.
+**Pagination note**: `truncated` mirrors `hasMore`. When `nextCursor` is present, pass it to fetch the next page. `hasMore: true` without `nextCursor` means uncached results may remain, but the snapshot cannot continue safely (for example, it became stale or reached the 5,000-result cache cap); start a narrower fresh search.
+**Resolution note**: `resolvedSymbol` includes `symbolId` and echoes the declaration that was actually searched — positions on comments or whitespace snap to the nearest enclosing named element, so check it matches the symbol you intended. When `totalIsExact` is `false`, `totalCount` is a lower bound.
 **type values**: `METHOD_CALL`, `FIELD_ACCESS`, `IMPORT`, `PARAMETER`, `VARIABLE`, `REFERENCE`
 
 ### ide_find_definition
 Go to where a symbol is defined.
 
-**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+**Target (mutually exclusive):** top-level `symbolId` OR `file`+`line`+`column` OR `language`+`symbol`; this tool also accepts the equivalent nested `target`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `target` | object | conditional | Exactly one of `symbolId`, `position` (`file`, `line`, `column`), or `qualifiedName` + `language`. Do not combine with top-level selectors. |
+| `symbolId` | string | conditional | Opaque handle returned by this tool or `ide_symbol_info`. Pass it alone to resolve the exact target after edits or rename. |
 | `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
 | `line` | integer | conditional | 1-based line. Required for position-based lookup. |
 | `column` | integer | conditional | 1-based column. Required for position-based lookup. |
@@ -97,7 +105,7 @@ Go to where a symbol is defined.
 | `maxPreviewLines` | integer | no | Max lines for full preview (default 50, max 500) |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ file, line, column, preview, symbolName, astPath }`
+**Returns**: `{ symbolId, file, line, column, preview, symbolName, astPath }`
 Handles: packages, compiled classes, library sources (jar: URLs).
 
 ### ide_symbol_info (disabled by default)
@@ -105,10 +113,12 @@ Resolved signature and documentation of the symbol at a position — the declara
 `ide_find_definition` cannot give, because its preview is source text with unresolved short type
 names and no doc comment.
 
-**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+**Target (mutually exclusive):** top-level `symbolId` OR `file`+`line`+`column` OR `language`+`symbol`; this tool also accepts the equivalent nested `target`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `target` | object | conditional | Exactly one of `symbolId`, `position` (`file`, `line`, `column`), or `qualifiedName` + `language`. Do not combine with top-level selectors. |
+| `symbolId` | string | conditional | Opaque handle returned by this tool or `ide_find_definition`. Pass it alone to resolve the exact target after edits or rename. |
 | `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
 | `line` | integer | conditional | 1-based line. Required for position-based lookup. |
 | `column` | integer | conditional | 1-based column. Required for position-based lookup. |
@@ -118,7 +128,12 @@ names and no doc comment.
 | `maxDocLength` | integer | no | Truncate documentation beyond this many characters. Default 4000, max 20000 |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ name, kind, qualifiedName, signature, signatureSource, parameters: [{name, type}], returnType, typeParameters, thrownTypes, modifiers, visibility, containingDeclaration, documentation, documentationTruncated, file, line, column, language }`
+**Returns**: `{ symbolId, name, kind, qualifiedName, signature, signatureSource, parameters: [{name, type}], returnType, typeParameters, thrownTypes, modifiers, visibility, containingDeclaration, documentation, documentationTruncated, file, line, column, language }`
+
+For both tools, omitting `project_path` lets `symbolId` route to its owning open project. Handles
+expire on server restart, project close, deletion, one hour of inactivity, or LRU eviction;
+self-navigating synthetic targets also expire after their backing source file changes. Rediscover
+after `SYMBOL_ID_EXPIRED`. Handles are non-canonical and must not be compared for equality.
 
 **Type resolution**: `signatureSource` says how far the types were resolved.
 - `java_psi` — Java declarations. Parameter and return types are fully qualified
@@ -152,7 +167,7 @@ Search for classes/interfaces by name using IDE's class index. Equivalent to Ctr
 | `pageSize` | integer | no | Results per page. Default 25, max 500 |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ classes: [{name, qualifiedName, file, line, kind, language}], totalCount, query }`
+**Returns**: `{ classes: [{symbolId, name, qualifiedName, file, line, kind, language}], totalCount, query }`
 **Path note**: Project results use relative paths. Dependency/library results may use absolute paths or `jar://` URLs.
 **Matching**: CamelCase (`USvc` -> `UserService`), substring, wildcard (`User*Impl`).
 
@@ -190,15 +205,17 @@ Search for text using IntelliJ Find in Files. Plain-text queries do substring ma
 | `project_path` | string | no | Project root path |
 
 **Returns**: `{ matches: [{file, line, column, context}], totalCount, query, nextCursor?, hasMore, totalCollected, offset, pageSize, stale }`
-**Pagination note**: when `hasMore` is `true`, pass `nextCursor` to fetch the next page.
+**Pagination note**: when `nextCursor` is present, pass it to fetch the next page. `hasMore: true` without `nextCursor` means uncached results may remain, but the snapshot cannot continue safely (for example, it became stale or reached the 5,000-result cache cap); start a narrower fresh search.
 
 ### ide_find_implementations
 Find implementations of interfaces, abstract classes, or abstract methods.
 
-**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+**Target for a fresh search (mutually exclusive):** top-level `symbolId` OR `file`+`line`+`column` OR `language`+`symbol`; this tool also accepts the equivalent nested `target`. Pagination requests pass `cursor` instead.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `target` | object | conditional | Exactly one of `symbolId`, `position` (`file`, `line`, `column`), or `qualifiedName` + `language`. Do not combine with top-level selectors. |
+| `symbolId` | string | conditional | Exact type/method handle from a previous result. |
 | `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
 | `line` | integer | conditional | 1-based line. Required for position-based lookup. |
 | `column` | integer | conditional | 1-based column. Required for position-based lookup. |
@@ -210,7 +227,7 @@ Find implementations of interfaces, abstract classes, or abstract methods.
 | `pageSize` | integer | no | Results per page. Default 100, max 500 |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ implementations: [{name, file, line, column, kind, language}], totalCount, nextCursor?, hasMore, totalCollected, offset, pageSize, stale }`
+**Returns**: `{ implementations: [{symbolId?, name, file, line, column, kind, language}], totalCount, nextCursor?, hasMore, totalCollected, offset, pageSize, stale }`
 **Languages**: Java, Kotlin, Python, JS/TS, PHP, Rust (not Go).
 
 ### ide_find_symbol (disabled by default)
@@ -227,17 +244,19 @@ Search for any code symbol (classes, methods, fields, functions) by name.
 | `pageSize` | integer | no | Results per page. Default 25, max 500 |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ symbols: [{name, qualifiedName, file, line, kind, language}], totalCount, query }`
+**Returns**: `{ symbols: [{symbolId, name, qualifiedName, file, line, kind, language}], totalCount, query }`
 **Languages**: Java, Kotlin, Python, JS/TS, Go, PHP, Rust, plus other IDE-supplied symbol contributors where available.
 **Path note**: Project results use relative paths. Dependency/library results may use absolute paths or `jar://` URLs.
 
 ### ide_find_super_methods
 Find parent methods that a given method overrides or implements.
 
-**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+**Target (mutually exclusive):** top-level `symbolId` OR `file`+`line`+`column` OR `language`+`symbol`; this tool also accepts the equivalent nested `target`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `target` | object | conditional | Exactly one of `symbolId`, `position` (`file`, `line`, `column`), or `qualifiedName` + `language`. Do not combine with top-level selectors. |
+| `symbolId` | string | conditional | Exact method handle from a previous result. |
 | `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
 | `line` | integer | conditional | 1-based line. Required for position-based lookup. |
 | `column` | integer | conditional | 1-based column (anywhere in method body works). Required for position-based lookup. |
@@ -245,55 +264,88 @@ Find parent methods that a given method overrides or implements.
 | `symbol` | string | conditional | Fully qualified symbol reference. For JS/TS, use module-qualified forms: `modulePath#exportName`, `modulePath#default`, or `modulePath#ClassName.memberName`. Required for symbol-based lookup. |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ method: {name, class, file, line}, hierarchy: [{name, class, file, line, isInterface}], totalCount }`
+**Returns**: `{ method: {symbolId?, name, class, file, line}, hierarchy: [{symbolId?, name, class, file, line, isInterface}], totalCount }`
 **Languages**: Java, Kotlin, Python, JS/TS, PHP (NOT Go, Rust).
 
 ### ide_type_hierarchy
-Get complete type inheritance hierarchy (supertypes and subtypes).
+
+Get the legacy nested type hierarchy, or bounded BFS pages when `maxNodes` is supplied.
+Legacy root/supertypes/subtypes share one handle budget: keep the root's handle and omit optional
+IDs above the budget while retaining all nodes. Use bounded pages when every node needs a handle.
+A query through a member's ID preserves that input declaration.
+When scope filtering hides an intermediate type, eligible descendants remain discoverable under
+their nearest included ancestor.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `symbolId` | string | no | Exact type handle from a previous result. |
 | `className` | string | no | FQN (preferred, faster). E.g., `com.example.MyClass` |
 | `file` | string | no | Alternative: project-relative file path. Unlike other read-only navigation tools, `ide_type_hierarchy` file mode does not resolve dependency/library absolute paths or `jar://` URLs. |
 | `line` | integer | no | Required with file |
 | `column` | integer | no | Required with file |
+| `language` | string | no | Language for a qualified semantic target; requires an installed symbol-reference handler |
+| `symbol` | string | no | Fully qualified symbol reference used with `language` |
+| `maxNodes` | integer | no | Opt into paging with 1–500 nodes; omit for a legacy tree. Cursor default 100 |
+| `cursor` | string | no | Opaque continuation from the previous page. Target/search parameters are ignored; `maxNodes` may set the next page size |
 | `scope` | enum | no | One of `project_files` (default), `project_and_libraries`, `project_production_files`, `project_test_files` |
 | `includeGenerated` | boolean | no | Include supertypes/subtypes in generated sources (KSP/Dagger/annotation-processor output). Default true — keeps generated types in the hierarchy |
 | `project_path` | string | no | Project root path |
 
-**Provide either** `className` **or** `file`+`line`+`column`.
-**Returns**: `{ element: {name, file, kind, language, supertypes?}, supertypes: [{name, file, kind, language, supertypes?}], subtypes: [{name, file, kind, language, supertypes?}] }`
+**Provide exactly one target:** one nested `target` variant, or legacy `symbolId`, `className`, `language`+`symbol`, or `file`+`line`+`column`.
+**Returns**: `{ element: {symbolId?, name, file, kind, language}, supertypes: [{symbolId?, name, file, kind, language}], subtypes: [{symbolId?, name, file, kind, language}], traversal: [{direction: "supertype"|"subtype", element: {...}}], returnedNodes, truncated, elapsedMs, hasMore, cursor? }`
+**Pagination**: Without `maxNodes`/`cursor`, legacy nested trees and limits remain. Explicit pages expose traversal-local `nodeId`, `parentId`, and `depth` for the first-discovery tree; `returnedNodes` excludes the root. Type `traversal` preserves combined BFS order. Follow `cursor` while present. Retention limits return the computed page with `hasMore=true`, no cursor, and `truncationReason`; narrow the query to continue. Cursors are session/project-bound, expire after ten idle minutes, and retain at most 128 snapshots overall and ten per traversal. Handles refresh on every page.
 **Languages**: Java, Kotlin, Python, JS/TS, PHP, Rust.
 
 ### ide_call_hierarchy
-Build call tree showing who calls a method or what a method calls.
 
-**Target (mutually exclusive):** `file`+`line`+`column` OR `language`+`symbol`
+Build call tree showing who calls a method or what a method calls.
+Kotlin getter/setter handles identify distinct callable bodies. A source property or parameter
+used as input keeps its original ID binding even if the hierarchy selects a related callable.
+
+**Target (mutually exclusive):** `symbolId` OR `file`+`line`+`column` OR `language`+`symbol`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `symbolId` | string | conditional | Exact callable handle from a previous result. |
 | `file` | string | conditional | Project-relative file path, or a dependency/library absolute path or `jar://` URL previously returned by the plugin. Required for position-based lookup. |
 | `line` | integer | conditional | 1-based line. Required for position-based lookup. |
 | `column` | integer | conditional | 1-based column. Required for position-based lookup. |
 | `language` | string | conditional | Symbol language (e.g., `"Java"`). Required for symbol-based lookup. |
 | `symbol` | string | conditional | Fully qualified symbol reference. For JS/TS, use module-qualified forms: `modulePath#exportName`, `modulePath#default`, or `modulePath#ClassName.memberName`. Required for symbol-based lookup. |
 | `direction` | enum | yes | `callers` or `callees` |
-| `depth` | integer | no | Recursion depth (default 3, max 5) |
+| `depth` | integer | no | Traversal depth across all pages (default 3, max 5) |
+| `maxNodes` | integer | no | Opt into paging with 1–500 nodes; omit for a legacy tree. Cursor default 100 |
+| `cursor` | string | no | Opaque continuation from the previous page. Target/search parameters are ignored; `maxNodes` may set the next page size |
 | `scope` | enum | no | One of `project_files` (default), `project_and_libraries`, `project_production_files`, `project_test_files` |
 | `includeGenerated` | boolean | no | Include callers/callees in generated sources (KSP/Dagger/annotation-processor output). Default true |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ element: {name, file, line, column, language}, calls: [{name, file, line, column, language, children: [...]}] }`
+**Returns**: `{ element: {symbolId?, name, file, line, column, language}, calls: [{symbolId?, name, file, line, column, language}], returnedNodes, truncated, elapsedMs, hasMore, cursor? }`
+Large legacy trees retain all nodes but may omit optional handles after the response handle budget;
+the root keeps its handle. Use bounded pages to obtain handles for every returned page.
+**Pagination**: Without `maxNodes`/`cursor`, legacy nested trees and limits remain. Explicit pages expose traversal-local `nodeId`, `parentId`, and `depth` for the first-discovery tree; `returnedNodes` excludes the root. Type `traversal` preserves combined BFS order. Follow `cursor` while present. Retention limits return the computed page with `hasMore=true`, no cursor, and `truncationReason`; narrow the query to continue. Cursors are session/project-bound, expire after ten idle minutes, and retain at most 128 snapshots overall and ten per traversal. Handles refresh on every page.
 
 ### ide_file_structure (disabled by default)
+
 Get hierarchical file structure like IDE's Structure panel. Each element includes both start and end line numbers (e.g., `(lines 42-65)` for multi-line elements, `(line 42)` for single-line elements).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | string | yes | Relative file path |
 | `project_path` | string | no | Project root path |
+| `includeNodes` | boolean | no | Include structured declaration nodes. Default: false |
+| `includeSymbolIds` | boolean | no | Bind exact handles for nodes; implies `includeNodes`. Default: false |
+| `maxSymbolIds` | integer | no | Handle budget when handles are enabled, from 1–100. Default: 100 |
 
-**Returns**: `{ file, language, structure }` (formatted tree with types, modifiers, signatures, and start/end line numbers)
+**Returns**: `{ file, language, structure, nodes, symbolIdsTruncated, symbolIdsOmitted }`
+`structure` is retained for compatibility. Set `includeNodes=true` to receive the same hierarchy as
+structured data; set `includeSymbolIds=true` when exact handles are needed (it implies nodes). IDs
+are bound to the exact extracted PSI elements rather than reconstructed from line numbers. Kotlin
+node kinds distinguish `INTERFACE`, `CLASS`, `ENUM`, `ANNOTATION`, and `OBJECT`.
+Without structured output, `nodes` is empty and the handle fields are `false` and `0`; with handles
+enabled, they report the per-response budget outcome.
+Handles are limited to 100 per response by default; `maxSymbolIds` can lower that limit to 1–100.
+`symbolIdsTruncated` flags this per-response budget and `symbolIdsOmitted` counts budget omissions.
 **Languages**: Java, Kotlin, Python, JS/TS, PHP, Markdown.
 
 PHP support requires the PHP plugin and is available in PhpStorm or IntelliJ IDEA Ultimate with the PHP plugin enabled.
@@ -317,25 +369,29 @@ Read file content by path or qualified name, including library/jar sources.
 ## Intelligence Tools
 
 ### ide_diagnostics
-Get code diagnostics from multiple sources: per-file analysis (errors, warnings, quick fixes/intentions), build output from the last build, and test results from open test run tabs. At least one source must be active: provide `file` for code analysis, `includeBuildErrors` for build output, or `includeTestResults` for test results. Can combine all three.
+
+Get code diagnostics from multiple sources: one `file` or a small `files` batch, build output from the last build, and test results from open test run tabs. At least one source must be active: provide exactly one of `file`/`files` for code analysis, `includeBuildErrors` for build output, or `includeTestResults` for test results. Sources can be combined.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | string | no | Relative file path. Optional — enables per-file code analysis |
-| `line` | integer | no | For intention lookup (default 1, requires `file`) |
-| `column` | integer | no | For intention lookup (default 1, requires `file`) |
-| `startLine` | integer | no | Filter problems to range (requires `file`) |
-| `endLine` | integer | no | Filter problems to range (requires `file`) |
+| `file` | string | no | One project-relative or in-project absolute path. Mutually exclusive with `files` |
+| `files` | string[] | no | Up to 100 supplied relative or in-project absolute paths under one shared timeout budget. Aliases/duplicates are tolerated and analyzed once. Mutually exclusive with `file` |
+| `line` | integer | no | For intention lookup (default 1, single `file` only) |
+| `column` | integer | no | For intention lookup (default 1, single `file` only) |
+| `startLine` | integer | no | Filter problems to range (single `file` only) |
+| `endLine` | integer | no | Filter problems to range (single `file` only) |
 | `includeBuildErrors` | boolean | no | Include errors/warnings from the last build. Default false |
 | `includeTestResults` | boolean | no | Include test results from open test run tabs. Default false |
 | `severity` | enum | no | Filter by severity across all sources: `all` (default), `errors`, `warnings` |
+| `maxProblems` | integer | no | Max code problems returned across the file(s). Default 100, max 500 |
 | `testResultFilter` | enum | no | Filter test results: `failed` (default) or `all` |
 | `maxBuildErrors` | integer | no | Max build errors to return. Default 100, max 500 |
 | `maxTestResults` | integer | no | Max test results to return. Default 100, max 500 |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ problems: [{message, severity, file, line, column, endLine?, endColumn?}], intentions: [{name, description}], problemCount, intentionCount, analysisFresh, analysisTimedOut, analysisMessage, buildErrors?, buildErrorCount?, buildWarningCount?, buildErrorsTruncated?, buildTimestamp?, testResults?, testResultsTruncated?, testSummary? }`
-**Notes**: Open files use fresh daemon highlights. Closed files use public batch analysis, so `WEAK_WARNING` results and quick-fix intentions may be less complete unless the file is already open in an editor. The `analysisMode` field reports which path ran: `open_daemon` or `closed_batch` (null when no analysis ran). The file is refreshed from disk before analysis, so no `ide_sync_files` call is needed after editing it with an external tool.
+**Returns**: `{ problems: [{message, severity, file, line, column, endLine?, endColumn?}], intentions?, problemCount, problemsTruncated?, intentionCount?, analysisFresh?, analysisTimedOut?, analysisMessage?, analysisMode?, fileAnalyses?: [{file, state, reason?, mode?, problemCount, problemsTruncated}], buildErrors?, buildErrorCount?, buildWarningCount?, buildErrorsTruncated?, buildTimestamp?, testResults?, testResultsTruncated?, testSummary? }`
+**Output cap**: At most `maxProblems` code problems across the response. Aggregate/per-file `problemsTruncated` flags known omissions; per-file `problemCount` counts only returned problems. Re-query a truncated path with `file`, narrowing `startLine`/`endLine` if needed.
+**Notes**: File paths preserve literal leading/trailing whitespace. Single-file mode keeps legacy top-level metadata and supports intentions/range filters. Multi-file entries use `analyzed`, `timed_out`, `failed`, `skipped` (not eligible), `not_analyzed` (not started before the shared deadline), or `not_found`; path resolution consumes the shared deadline, and aliases/duplicates are resolved once. Open files use fresh daemon highlights; closed files use public batch analysis. The complete single-file operation is timeout-bounded too, including refresh, PSI setup, and analysis-lock waits. A daemon that reports it did not run can fall back to batch analysis within the remaining budget; a daemon that consumes the timeout does not start a second batch budget.
 **Severity levels**: `ERROR`, `WARNING`, `WEAK_WARNING`
 
 ### ide_project_diagnostics (disabled by default)
@@ -362,22 +418,29 @@ Each call blocks at most `waitSeconds` (default 45) so the MCP client's request 
 ## Refactoring Tools
 
 ### ide_refactor_rename
+
 Rename a symbol or file and update ALL references (semantic rename, not find-replace). Works across ALL languages.
 
-**Target:** `file` + `targetType="file"` for file rename, or `file` + `targetType="symbol"` + `line` + `column` for symbol rename. Without `targetType`, legacy `null/null => file` and `line`+`column => symbol` behavior remains.
+**Target:** `file` + `targetType="file"` for file rename; for symbol rename use `symbolId`, or `file` + `targetType="symbol"` + `line` + `column`. Without `targetType`, legacy `null/null => file` and `line`+`column => symbol` behavior remains.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `target` | object | conditional | Structured symbol selector containing exactly one of `symbolId`, `position: {file, line, column}`, or `qualifiedName` + `language`. Mutually exclusive with legacy top-level selectors. |
+| `symbolId` | string | conditional | Exact symbol handle. Mutually exclusive with `file`/coordinates. |
 | `file` | string | conditional | Relative file path. Required for position-based lookup. |
+| `language` | string | conditional | Legacy qualified-name selector language; requires `symbol`. |
+| `symbol` | string | conditional | Legacy qualified symbol name; requires `language`. |
 | `targetType` | string | no | `symbol` or `file`. When `file`, placeholder `line`/`column` values are ignored. |
 | `line` | integer | no | 1-based line for symbol rename. |
 | `column` | integer | no | 1-based column for symbol rename. |
 | `newName` | string | yes | New name for the symbol |
 | `overrideStrategy` | enum | no | `rename_base` (default), `rename_only_current`, `ask` |
 | `relatedRenamingStrategy` | enum | no | Controls automatic renaming of related symbols (same-named properties, getters/setters, test classes, variables): `all` (default) renames all related symbols, `none` renames only the targeted symbol, `accessors_and_tests` renames only getters/setters and test classes/methods, `ask` shows the IDE dialog for each related rename |
+| `dryRun` | boolean | no | Resolve/validate and discover usages/conflicts without writing or saving files. Default false |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ success, affectedFiles: [paths], changesCount, message }`
+**Returns**: `{ success, affectedFiles: [paths], changesCount, message, updatedSymbol? }`
+**Returns with `dryRun: true`**: common preview shape; rename `plannedChange` contains `{operation: "rename", targetType, from, to, overrideStrategy, relatedRenamingStrategy}`. Constructors resolve to the containing class for preview and apply. Destination conflicts include implicit Java file renames and existing directories.
 **Auto-renames**: getters/setters, overriding methods, constructor params <-> fields, test classes.
 **Supports IDE undo** (Ctrl+Z).
 
@@ -398,15 +461,21 @@ Delete a symbol or file, checking for usages first.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | string | yes | Relative file path |
-| `line` | integer | no | Required for target_type="symbol" |
-| `column` | integer | no | Required for target_type="symbol" |
+| `target` | object | conditional | Structured symbol selector containing exactly one of `symbolId`, `position: {file, line, column}`, or `qualifiedName` + `language`. Mutually exclusive with legacy top-level selectors. |
+| `symbolId` | string | conditional | Exact symbol handle for `target_type="symbol"`. Mutually exclusive with coordinates. |
+| `file` | string | conditional | Relative file path. Required for position-based symbol deletion and file deletion. |
+| `language` | string | conditional | Legacy qualified-name selector language; requires `symbol`. |
+| `symbol` | string | conditional | Legacy qualified symbol name; requires `language`. |
+| `line` | integer | conditional | Required with `file` for position-based symbol deletion |
+| `column` | integer | conditional | Required with `file` and `line` for position-based symbol deletion |
 | `target_type` | enum | no | `symbol` (default) or `file` |
 | `force` | boolean | no | Force delete even with usages (default false) |
+| `dryRun` | boolean | no | Resolve target and discover usages/blockers without deleting or saving. Default false |
 | `project_path` | string | no | Project root path |
 
-**Returns (success)**: `{ success, affectedFiles, changesCount, message }`
+**Returns (success)**: `{ success, affectedFiles, changesCount, message, invalidatedSymbolId? }`
 **Returns (blocked)**: `{ canDelete: false, elementName, usageCount, blockingUsages: [...], message }`
+**Returns with `dryRun: true`**: common preview shape; `plannedChange` contains `{operation: "safeDelete", targetType, name, force}`. Usages contribute to `conflictCount`; without `force`, they make `canApply` false. A failed usage search is inapplicable unless `force` explicitly overrides it. Files with no discovered top-level declaration retain their existing apply eligibility and report an incomplete-discovery warning. Preview leaves `symbolId` valid. Generated Kotlin JVM methods without a matching standalone source declaration are rejected in preview and apply, including with `force`; select the intended source declaration explicitly.
 
 ### ide_reformat_code (disabled by default)
 Reformat code per project style (.editorconfig, IDE settings). Equivalent to Ctrl+Alt+L / Cmd+Opt+L.
@@ -461,20 +530,36 @@ Pattern-based code search and transformation using IntelliJ's Structural Search 
 ### ide_change_signature (disabled by default, Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
 Change method signature (name, return type, visibility, parameters) with automatic caller updates.
 
+**Languages:** Java, Kotlin, Python, JavaScript, TypeScript, Go, PHP, Rust. Select Kotlin functions by source position or
+`symbolId`; override changes start at the base declaration and update implementations and callers.
+Preview reports the base target without rebinding the original override's handle. After apply,
+`updatedSymbol` preserves that handle's declaration when it remains available.
+
+Preview and apply refuse conflicts, incomplete discovery, read-only scope, and missing defaults
+for new required caller/delegate arguments. Return-type changes with overriders are conservatively
+refused, including cases where narrower overriding types could safely remain unchanged.
+Java override targets do not redirect to the base; select the base explicitly for hierarchy-wide
+changes to avoid breaking the override contract.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | string | yes | Relative file path containing the method |
-| `line` | integer | yes | 1-based line of the method |
-| `column` | integer | yes | 1-based column on the method name |
+| `target` | object | conditional | Structured method selector containing exactly one of `symbolId`, `position: {file, line, column}`, or `qualifiedName` + `language`. Mutually exclusive with legacy top-level selectors. |
+| `symbolId` | string | conditional | Exact method handle. Mutually exclusive with coordinates. |
+| `file` | string | conditional | Relative file path containing the method. Required without `symbolId`. |
+| `line` | integer | conditional | 1-based line of the method. Required without `symbolId`. |
+| `column` | integer | conditional | 1-based column on the method name. Required without `symbolId`. |
+| `language` | string | conditional | Legacy qualified-name selector language; requires `symbol`. |
+| `symbol` | string | conditional | Legacy qualified method name; requires `language`. |
 | `newName` | string | no | New method name (unchanged if omitted) |
 | `newReturnType` | string | no | New return type (unchanged if omitted) |
-| `newVisibility` | string | no | `public`, `protected`, `private`, or `package-local` (unchanged if omitted) |
+| `newVisibility` | string | no | `public`, `protected`, `private`, or `package-private` (`package-local` is a legacy alias; unchanged if omitted) |
 | `newParameters` | array | no | Array of `{ oldIndex, name, type, defaultValue }`. Use `oldIndex: -1` for new params |
-| `generateDelegate` | boolean | no | Generate delegate with old signature (default false) |
+| `generateDelegate` | boolean | no | Generate delegate with old signature (default false); new required parameters need explicit non-blank defaults even with no existing callers |
+| `dryRun` | boolean | no | Resolve/validate and discover callers/conflicts without writing or saving files. Default false |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ success, file, message, affectedFiles, changesCount }`
-**Languages**: Java, Python, JS/TS.
+**Returns**: `{ success, file, message, affectedFiles, changesCount, updatedSymbol? }`
+**Returns with `dryRun: true`**: common preview shape; `plannedChange` contains `{operation: "changeSignature", before: {...}, requested: {...}}`.
 
 ### ide_create_file (disabled by default)
 Create a new source file with content, immediately indexed by IntelliJ. The file is created through IntelliJ's VFS, so it is instantly available for `ide_find_references`, `ide_refactor_rename`, `ide_edit_member`, and all other IDE tools without needing `ide_sync_files`. Use this instead of the Write tool for creating source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`). The file must not already exist.
@@ -506,16 +591,20 @@ Replace an entire member declaration (signature + body) with new content.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | string | yes | Relative file path |
+| `target` | object | conditional | Exactly one nested selector: `{symbolId}`, `{position:{file,line,column}}`, or `{qualifiedName,language}`. Mutually exclusive with all legacy target/member selectors (`symbolId`, `language`+`symbol`, `file`, `class`, `member`, `parameterCount`, `line`). |
+| `symbolId` | string | conditional | Exact member handle. Mutually exclusive with member selectors. |
+| `language` | string | conditional | Legacy semantic lookup language. Required with `symbol`; mutually exclusive with `target`, `symbolId`, and member selectors. |
+| `symbol` | string | conditional | Legacy qualified member name. Required with `language`; mutually exclusive with `target`, `symbolId`, and member selectors. |
+| `file` | string | conditional | Relative file path. Required only for the legacy file + member selector. |
 | `class` | string | no | Class name to scope the search |
-| `member` | string | yes | Name of the member to replace |
+| `member` | string | conditional | Name of the member to replace. Required only for the legacy file + member selector. |
 | `parameterCount` | integer | no | Parameter count to disambiguate overloads |
 | `line` | integer | no | 1-based line to disambiguate same-name members |
 | `content` | string | yes | Full replacement declaration (signature + body) |
 | `reformat` | boolean | no | Reformat after replacement (default true) |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ success, file, message, startLine, endLine }`
+**Returns**: `{ success, file, message, startLine, endLine, updatedSymbol? }`
 
 ### ide_insert_member (disabled by default, Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
 Insert a new member at a structural position in a class or file.
@@ -539,16 +628,20 @@ Replace a method body or field initializer only, preserving the signature.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | string | yes | Relative file path |
+| `target` | object | conditional | Exactly one nested selector: `{symbolId}`, `{position:{file,line,column}}`, or `{qualifiedName,language}`. Mutually exclusive with all legacy target/member selectors (`symbolId`, `language`+`symbol`, `file`, `class`, `member`, `parameterCount`, `line`). |
+| `symbolId` | string | conditional | Exact member handle. Mutually exclusive with member selectors. |
+| `language` | string | conditional | Legacy semantic lookup language. Required with `symbol`; mutually exclusive with `target`, `symbolId`, and member selectors. |
+| `symbol` | string | conditional | Legacy qualified member name. Required with `language`; mutually exclusive with `target`, `symbolId`, and member selectors. |
+| `file` | string | conditional | Relative file path. Required only for the legacy file + member selector. |
 | `class` | string | no | Class name to scope the search |
-| `member` | string | yes | Name of the member whose body/initializer to replace |
+| `member` | string | conditional | Name of the member whose body/initializer to replace. Required only for the legacy file + member selector. |
 | `parameterCount` | integer | no | Parameter count to disambiguate overloads |
 | `line` | integer | no | 1-based line to disambiguate same-name members |
 | `content` | string | yes | New method body (without braces) or field initializer (without `=`) |
 | `reformat` | boolean | no | Reformat after replacement (default true) |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ success, file, message, startLine, endLine }`
+**Returns**: `{ success, file, message, startLine, endLine, updatedSymbol? }`
 
 ---
 
@@ -565,14 +658,16 @@ Check if IDE is ready for code intelligence operations.
 When `isDumbMode: true`, most tools will fail. Wait and retry.
 
 ### ide_sync_files
+
 Force sync IDE's virtual file system with external file changes.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `paths` | string[] | no | Relative paths to sync (empty = sync entire project) |
+| `paths` | string[] | no | Paths relative to the selected project/content root, or absolute paths inside any project/content root. Relative paths try the project base then module content roots when `project_path` is omitted or selects the project base; a selected content root confines relative resolution there. Deleted targets refresh their nearest existing parent. Relative traversal and symlink escapes are rejected. Empty/omitted = sync entire selected root |
 | `project_path` | string | no | Project root path |
 
-**Returns**: `{ syncedPaths, syncedAll, message }`
+**Returns**: `{ syncedPaths, syncedAll, message, refreshedRoots, deletedPaths }`
+`syncedPaths` reports normalized targets, `refreshedRoots` reports absolute system-independent roots actually refreshed, and `deletedPaths` identifies targets absent on disk. Discovery ancestors and deletion parents receive shallow refreshes; only explicitly requested existing targets receive recursive refreshes. A shallow ancestor does not replace a recursive target in `refreshedRoots`. Absolute paths match every allowed root even when another content root is selected. The full batch is validated inside project/content roots before refresh begins, all invalid entries are returned together, and an empty safe-root set is an explicit error.
 Call this when files were created/modified outside the IDE and search tools miss them.
 
 ### ide_build_project (disabled by default)
@@ -709,7 +804,7 @@ Open a project by absolute path and wait until indexing completes. Idempotent: r
 
 ## Lifecycle Tools
 
-Lifecycle management sleeps and wakes open projects based on window focus and MCP activity. Modes: `active` (full IDE), `background` (Power Save on), `dormant` (editors closed, PSI caches dropped), `closed` (fully unloaded, auto-reopens on next MCP call).
+Lifecycle management sleeps and wakes open projects based on window focus and MCP activity. Modes: `active` (full IDE), `background` (Power Save on), `dormant` (editor tabs closed until the window regains focus, PSI caches dropped), `closed` (fully unloaded, auto-reopens on next MCP call). Every MCP tool call on a managed project restarts its idle countdown.
 
 It is opt-in and disabled by default — enable "Enable lifecycle management" in Settings > Tools > Index MCP Server. Until then the tools below only report or alter persisted enrollment state; no automatic transitions occur.
 
@@ -788,7 +883,7 @@ Return recent lifecycle events for all projects (ring buffer, last 500 events). 
 | `project` | string | no | Optional path filter (substring match against project path) |
 | `project_path` | string | no | Routing hint when multiple projects are open |
 
-**Returns**: `{ events: [{timestamp, project, path, event, from?, to?, trigger}], log_file, buffered }`. Event types: `open`, `closed`, `transition`, `enroll`, `release`, `wake`. Trigger values: `focus_gained`, `focus_lost`, `timer:focus`, `timer:inactivity`, `timer:close`, `mcp_call`, `auto_open`, `user`.
+**Returns**: `{ events: [{timestamp, project, path, event, from?, to?, trigger, detail?}], log_file, buffered }`. Event types: `open`, `closed`, `transition`, `enroll`, `release`, `wake`, `editors_closed`, `editors_restored`. Trigger values: `focus_gained`, `focus_lost`, `timer:focus`, `timer:inactivity`, `timer:close`, `mcp_call`, `auto_open`, `user`. `detail` explains an event where it helps — how long the project had no MCP call when `timer:inactivity` fired, or how many editor tabs a dormant transition closed.
 
 ### ide_set_lifecycle_log_file (disabled by default)
 Enable or disable writing lifecycle events to the log file on disk. The in-memory ring buffer (queryable via `ide_lifecycle_log`) is always active regardless of this setting; the file allows `tail -f` monitoring and post-mortem analysis even when no MCP connection is available.
@@ -840,10 +935,10 @@ Install a plugin zip into the IDE, replacing any existing version. Auto-detects 
 **Returns**: text confirmation with the installed plugin id and zip name.
 
 ### ide_restart (disabled by default)
-Restart the IDE. Terminates the MCP connection immediately — reconnect after the IDE comes back up.
+Restart the IDE. Not a terminal step: the MCP server is down only while the IDE relaunches (usually well under a minute) and comes back on its own once the previous projects reopen. Poll `ide_index_status` until it answers, then continue. Streamable HTTP clients need no reconnect — every call is an independent POST — but legacy SSE clients must reopen the `/index-mcp/sse` stream. Symbol handles and search cursors issued before the restart are invalid afterwards; after `ide_install_plugin`, refresh the tool list so changed schemas are picked up. If nothing answers after a few minutes, the restart was probably intercepted (for example by a save dialog) — report it instead of polling forever.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `project_path` | string | no | Project root path |
 
-**Returns**: text confirmation; the connection drops right after.
+**Returns**: text confirmation (`Restarting IDE.`) sent before the restart begins; tool calls fail until the IDE is back.

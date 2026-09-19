@@ -2,6 +2,7 @@ package com.github.hechtcarmel.jetbrainsindexmcpplugin.tools
 
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.testutil.get
 
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ErrorMessages
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ParamNames
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.SchemaConstants
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ToolNames
@@ -15,7 +16,9 @@ import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.navigation.FindUsage
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.navigation.TypeHierarchyTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.project.CreateModuleTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.settings.McpSettings
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.ChangeSignatureTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.RenameSymbolTool
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.refactoring.SafeDeleteTool
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.handlers.LanguageHandlerRegistry
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.handlers.isExcludedPath
 import io.mockk.every
@@ -27,6 +30,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 class ToolsUnitTest : TestCase() {
     private fun assertHasScopeAndNoLegacyFilters(toolName: String, properties: kotlinx.serialization.json.JsonObject?) {
@@ -93,6 +97,23 @@ class ToolsUnitTest : TestCase() {
         }
     }
 
+    fun testRefactoringPreviewsStillParticipateInConfiguredPsiSync() {
+        val previewArguments = buildJsonObject {
+            put(ParamNames.DRY_RUN, true)
+        }
+
+        listOf(
+            RenameSymbolTool(),
+            SafeDeleteTool(),
+            ChangeSignatureTool()
+        ).forEach { tool ->
+            assertTrue(
+                "${tool.name} dry-run must honor configured VFS/PSI synchronization",
+                tool.needsPsiSync(previewArguments)
+            )
+        }
+    }
+
     // ── rename mode resolution ─────────────────────────────────────────────────
 
     fun testRenameSymbolToolResolvesFileModeWhenTargetTypeFileEvenWithZeroCoordinates() {
@@ -128,6 +149,25 @@ class ToolsUnitTest : TestCase() {
         assertEquals("File rename should short-circuit before parsing coordinates", "FileRenameMode", decision.javaClass.simpleName)
     }
 
+    fun testRenameSymbolToolRejectsNestedPositionWithFileMode() {
+        val normalized = UnifiedTargetArguments.normalize(buildJsonObject {
+            put(ParamNames.TARGET_TYPE_CAMEL, "file")
+            putJsonObject(UnifiedTargetArguments.TARGET) {
+                putJsonObject(UnifiedTargetArguments.POSITION) {
+                    put(ParamNames.FILE, "src/Foo.kt")
+                    put(ParamNames.LINE, 2)
+                    put(ParamNames.COLUMN, 3)
+                }
+            }
+        }).getOrThrow()
+
+        val decision = RenameSymbolTool.resolveRenameMode(normalized)
+
+        assertEquals("Nested position must retain symbol intent", "InvalidRenameMode", decision.javaClass.simpleName)
+        val errorMessage = decision.javaClass.getMethod("getError").invoke(decision) as String
+        assertTrue(errorMessage.contains("target.position"))
+    }
+
     fun testRenameSymbolToolSymbolModeRejectsMalformedCoordinates() {
         val decision = RenameSymbolTool.resolveRenameMode(
             buildJsonObject {
@@ -138,6 +178,40 @@ class ToolsUnitTest : TestCase() {
         )
 
         assertEquals("Symbol rename should reject malformed coordinates", "InvalidRenameMode", decision.javaClass.simpleName)
+    }
+
+    fun testRenameSymbolToolQualifiedSelectorConflictNamesTheProvidedSelector() {
+        val decision = RenameSymbolTool.resolveRenameMode(
+            buildJsonObject {
+                put(ParamNames.LANGUAGE, "Java")
+                put(ParamNames.SYMBOL, "com.example.Service#run()")
+                put(ParamNames.FILE, "src/Service.java")
+            }
+        )
+
+        assertEquals("Mixed qualified selector should be rejected", "InvalidRenameMode", decision.javaClass.simpleName)
+        val errorMessage = decision.javaClass.getMethod("getError").invoke(decision) as String
+        assertEquals(ErrorMessages.LANGUAGE_SYMBOL_AND_OTHER_TARGET_EXCLUSIVE, errorMessage)
+        assertFalse("Error must not claim that symbolId was provided", errorMessage.contains("symbolId"))
+    }
+
+    fun testRenameSymbolToolDoesNotReinterpretNestedPositionAsFileTarget() {
+        val normalized = UnifiedTargetArguments.normalize(
+            buildJsonObject {
+                put(ParamNames.TARGET_TYPE_CAMEL, kotlinx.serialization.json.JsonPrimitive("file"))
+                putJsonObject("target") {
+                    putJsonObject("position") {
+                        put("file", "src/Target.java")
+                        put("line", 4)
+                        put("column", 8)
+                    }
+                }
+            }
+        ).getOrThrow()
+
+        val decision = RenameSymbolTool.resolveRenameMode(normalized)
+
+        assertEquals("Nested position always denotes a symbol target", "InvalidRenameMode", decision.javaClass.simpleName)
     }
 
     private fun invokeRenameModeResolver(targetType: String?, line: Int?, column: Int?): Any {

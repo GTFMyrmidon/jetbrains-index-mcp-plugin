@@ -273,6 +273,12 @@ TypeScript SDK), and the stateless Streamable HTTP transport cannot send keep-al
 notifications (kotlin-sdk 0.10.0 drops them in JSON response mode). **No tool call may ever
 block past ~45–55s** — a longer operation must long-poll (issue #277).
 
+`McpToolDispatcher` gives ordinary tool execution a 55-second coroutine deadline and reports
+expiry as an actionable tool error. The three long-poll tools retain their own budgets so their
+operation IDs are not lost. Cancellation remains cooperative: use cancellable EDT dispatch and
+`cancellableBlockingAction` for interruptible blocking analysis with a platform progress indicator.
+An already-running write is not rolled back on timeout; callers must inspect it before retrying.
+
 Shared infrastructure (used by `ide_run_tests`, `ide_build_project`, and `ide_project_diagnostics`):
 - `tools/LongPoll.kt` — the per-call wait-budget policy: `waitSeconds` parameter, default 45,
   ceiling 55.
@@ -281,7 +287,7 @@ Shared infrastructure (used by `ide_run_tests`, `ide_build_project`, and `ide_pr
   exactly-once cleanup, and `awaitWithinBudget` (completed result beats a stale timeout verdict,
   which beats waiting).
 
-A new long-running tool plugs in with three pieces:
+A new long-running tool plugs in with four pieces:
 1. An operation class extending `LongPollOperation` — payload plus `deadlineMs` / `onDeadline`
    (kill, or nothing) / `onCleanup` (disconnect, dispose) hooks.
 2. A project-level `@Service` registry extending `LongPollRegistry<YourOp>` (a few lines; see
@@ -290,6 +296,7 @@ A new long-running tool plugs in with three pieces:
    paths call `awaitWithinBudget`, returning either the tool's normal result (then
    `registry.remove(id)`) or an in-progress model (`status: "running"` + the id + an actionable
    poll instruction). Override `needsPsiSync(arguments)` to skip PSI sync on attach calls.
+4. Add the tool to `McpToolDispatcher.LONG_POLL_TOOLS` so the dispatcher does not impose the ordinary 55-second deadline.
 
 ### Code Style
 - Follow Kotlin coding conventions
@@ -439,6 +446,13 @@ plugin:
   `ide_list_tests` could only ever answer "No test frameworks are registered" and would be
   untestable.
 
+`-PkotlinPluginTests=true` additionally loads the bundled Kotlin plugin and the sources under
+`src/kotlinPluginTest/kotlin`, including `KotlinReplaceMemberFormattingBehaviorTest`,
+`KotlinRenameBaseBehaviorTest`,
+`KotlinChangeSignatureBehaviorTest`, and the safe-delete parameter, qualified-target, and
+synthetic-target behavior tests. The plugin's newer metadata is excluded from test compilation;
+the test runtime uses the IDE's matching stdlib.
+
 `gradle.properties` also adds `JavaScript` to `platformBundledPlugins`. That one is *not*
 test-only in form — it is a compile/test classpath entry — but it does not change what the plugin
 requires at runtime: `plugin.xml` already declared `<depends optional="true">JavaScript</depends>`.
@@ -495,29 +509,29 @@ Tools are organized by IDE availability.
 
 **Universal Tools (All Supported JetBrains IDEs):**
 - `ide_find_references` - Find all usages of a symbol. Supports `language`+`symbol` as alternative to `file`+`line`+`column`. Includes generated sources by default (`includeGenerated: true`) so valid runtime references (Dagger/MapStruct/gRPC/serializers) aren't missed; set `includeGenerated: false` to drop generated DI factories/mappers/stubs when they dominate results. Optional `paths` restricts results to project-relative globs (`!` prefix excludes).
-- `ide_find_definition` - Find symbol definition location. Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
-- `ide_symbol_info` - Resolved signature and documentation for the symbol at a position, without reading the file. Java parameter/return types are expanded to fully qualified names with structured `parameters`; other languages fall back to the signature their own Quick Documentation renders. `signatureSource` reports which (`java_psi` / `quick_navigation` / `element_text`). Supports `language`+`symbol` as an alternative to `file`+`line`+`column`. (disabled by default)
+- `ide_find_definition` - Find symbol definition location. Accepts top-level `symbolId`, `language`+`symbol`, or `file`+`line`+`column`, plus an equivalent nested `target`, and returns a reusable `symbolId` for exact lookup after edits or rename.
+- `ide_symbol_info` - Resolved signature and documentation for a symbol, without reading the file. Java parameter/return types are expanded to fully qualified names with structured `parameters`; other languages fall back to the signature their own Quick Documentation renders. `signatureSource` reports which (`java_psi` / `quick_navigation` / `element_text`). Accepts the same flat or nested targets as `ide_find_definition` and returns a reusable `symbolId`. (disabled by default)
 - `ide_find_class` - Search for classes/interfaces by name with camelCase/substring/wildcard matching
 - `ide_find_file` - Search for files by name using IDE's file index
 - `ide_find_symbol` - Search for symbols (classes, methods, fields, functions) by name with IntelliJ Go to Symbol matching (disabled by default)
 - `ide_search_text` - Text search using IntelliJ Find in Files with context filtering (substring matching for plain text, regex matching when enabled). Optional `paths` restricts the search to project-relative globs (`!` prefix excludes)
 - `ide_read_file` - Read file content by path or qualified name, including library/jar sources (disabled by default)
-- `ide_diagnostics` - Unified diagnostics tool: per-file code analysis (errors, warnings, intentions), build output from last build, and test results from open test run tabs. Supports `includeBuildErrors`, `includeTestResults`, `severity` filter, `testResultFilter`, `maxBuildErrors`, `maxTestResults`. The `file` parameter is now optional. The result's `analysisMode` reports which path produced file problems: `open_daemon` or `closed_batch`. The analyzed file is refreshed from disk and committed to PSI first, so an out-of-band edit is analyzed as written without an `ide_sync_files` call.
+- `ide_diagnostics` - Unified diagnostics tool: per-file code analysis (errors, warnings, intentions), build output from last build, and test results from open test run tabs. Supports one `file` or up to 100 supplied `files` (relative or in-project absolute, aliases deduplicated) under a shared timeout budget, plus `maxProblems`, `includeBuildErrors`, `includeTestResults`, `severity`, `testResultFilter`, `maxBuildErrors`, and `maxTestResults`. The result's `analysisMode` reports which path produced single-file problems (`open_daemon` or `closed_batch`); multi-file `fileAnalyses` use `analyzed`/`timed_out`/`failed`/`skipped`/`not_analyzed` plus `not_found`. The timeout includes path resolution, disk refresh, PSI setup, and analysis-lock waits; a daemon that consumes it does not receive a second batch-fallback budget.
 - `ide_project_diagnostics` - Batch/project-scope diagnostics for many files including unopened ones, with fail-closed coverage metadata (issue #246): every file in scope gets exactly one state (`analyzed`/`timed_out`/`failed`/`skipped`/`not_analyzed`) and `complete` is true only when every considered file was analyzed, so an empty problems list can never be mistaken for a clean project. Reuses the per-file analysis engine (open files get daemon highlights, closed files the public batch pass). Long analyses long-poll via `analysisId` (same pattern as `ide_build_project`); one analysis per project at a time. (disabled by default)
 - `ide_index_status` - Check indexing status (dumb/smart mode)
-- `ide_sync_files` - Force sync IDE's virtual file system and PSI cache with external file changes
+- `ide_sync_files` - Force sync IDE's virtual file system and PSI cache with external file changes. Absolute targets may match any project/content root. Relative targets try the project base then module content roots when `project_path` is omitted or selects the project base; selecting a specific content root confines relative resolution there. The complete batch is validated before refresh; invalid entries fail together, known deleted targets refresh their nearest existing parent, and `refreshedRoots`/`deletedPaths` disclose what was refreshed. Calls fail explicitly when no safe project/content root is available.
 - `ide_reload_project` - Force-reload the project build model (Maven, Gradle, or both) after modifying build files. Equivalent to "Reload All Maven Projects" / "Reload Gradle Project" in the IDE. Async — returns immediately, resolution happens in background. (disabled by default)
 - `ide_link_build_system` - Link an unlinked Maven or Gradle project so the IDE resolves its dependencies. Use when `ide_reload_project` reports "not linked". Detects build system automatically from build files. Uses the platform's `ExternalSystemUnlinkedProjectAware` EP. (disabled by default)
 - `ide_import_modules` - Import external Maven project directories as modules into the current IntelliJ window for cross-project code intelligence and refactoring. Already imported module roots are skipped. Requires Maven plugin. (disabled by default)
 - `ide_open_workspace` - Scan a root directory for Maven projects and open them all in one IntelliJ window with full cross-project code intelligence, or provide an explicit list of Maven project paths via `modules`. `path` and `modules` are mutually exclusive; `modules` uses SHA-based caching. Creates a temporary aggregator POM with relative module paths. Requires Maven plugin. (disabled by default)
 - `ide_build_project` - Build project using IDE's build system (JPS, Gradle, Maven, CMake (CLion)). Returns structured errors/warnings with file locations when available (null counts = no messages captured, not 0). Uses CompilationStatusListener for JPS builds, BuildProgressListener (BuildViewManager) for Gradle/Maven builds, and for CLion — whose CMake builds bypass both — the cidr build-finished topic plus the build log from the Messages tool window, parsed for MSVC/Clang/CMake diagnostics. Supports workspace sub-project targeting via `project_path`. Each call blocks at most `waitSeconds` (default 45): a still-running call returns `{"status": "running", "buildId": ...}` and the agent polls with `buildId` while the build continues in the IDE. (disabled by default)
-- `ide_change_signature` - Change method signature (name, return type, visibility, parameters) with automatic caller updates using IntelliJ's Change Signature refactoring. Java, Kotlin, Python, JS/TS, Go, PHP, Rust. (disabled by default)
+- `ide_change_signature` - Change method signature (name, return type, visibility, parameters) with automatic caller updates using IntelliJ's Change Signature refactoring. Supports Java, Kotlin, Python, JS/TS, Go, PHP, and Rust; accepts legacy selectors, `symbolId`, or nested `target`. (disabled by default)
 - `ide_create_file` - Create a new source file with content, immediately indexed by IntelliJ. Created through IntelliJ's VFS, instantly available for all IDE tools without needing `ide_sync_files`. Use instead of Write for source files (e.g., `.java`, `.kt`, `.ts`, `.tsx`, `.py`, `.cpp`, `.cs`, `.js`). File must not already exist. (disabled by default)
 - `ide_replace_text_in_file` - Find and replace text in a file using IntelliJ's Document API. Plain text or regex replacement through IntelliJ's document model, so changes are immediately visible to index, PSI, and all other IDE tools without needing `ide_sync_files`. (disabled by default)
 - `ide_run_tests` - Run tests via the IDE's run configuration infrastructure. `target` accepts an existing run config name (works for any language/framework) or a Java/Kotlin class/method FQN (`com.example.MyTest` / `com.example.MyTest#testFoo`). **Creating a config from an FQN is Java/Kotlin-only** — for Python/JS/TS/Go/PHP/Rust, pass an existing run-config name. Results are read directly from the IDE's test runner (any Service-Message-based framework: JUnit, TestNG, pytest, Jest, Go test, PHPUnit), returning structured pass/fail/error counts, exit code, per-test results, and console output (each test's own prints on its entry, unattributed framework/suite output on the result's `output` field; stdout/stderr merged in print order, ANSI stripped, system messages excluded, size-budgeted). Each call blocks at most `waitSeconds` (default 45) so the MCP client's request timeout is never hit: a still-running call — including one whose pre-test build is still compiling, in which case the test process has not started yet — returns `{"status": "running", "runId": ...}` and the agent polls with `runId` while the run (bounded by `timeoutSeconds` counted from process start, enforced by a registry watchdog) continues in the IDE. By default the run does not activate (pop open) the Run tool window; pass `activateToolWindow: true` to open it. (disabled by default)
-- `ide_refactor_rename` - Rename a symbol or file across the project with automatic related element renaming (getters/setters, overriding methods). Fully headless, works for ALL languages. Two modes: **symbol rename** (file + line + column + newName) and **file rename** (file + newName, omit line/column). File rename mode works for all file types including binary files (images, etc.) and is especially useful for Android resource files where it updates all XML references. Supports `relatedRenamingStrategy` parameter to control automatic related renames: `"all"` (default), `"none"`, `"accessors_and_tests"`, or `"ask"`.
-- `ide_refactor_safe_delete` - Safely delete element or file after checking for usages (Java, Python, JS/TS, etc.)
-- `ide_move_file` - Move a file to a new directory using the IDE's refactoring engine. Automatically updates all references, imports, and package declarations across the project. Supports automatic directory creation and optional reference update toggle.
+- `ide_refactor_rename` - Preview a symbol or file rename with `dryRun`, or apply it across the project with automatic related element renaming (getters/setters, overriding methods). Fully headless, works for ALL languages, and accepts legacy selectors, `symbolId`, or a nested `target`. Two modes: **symbol rename** (file + line + column + newName) and **file rename** (file + newName, omit line/column). File rename mode works for all file types including binary files (images, etc.) and is especially useful for Android resource files where it updates all XML references. Supports `relatedRenamingStrategy` parameter to control automatic related renames: `"all"` (default), `"none"`, `"accessors_and_tests"`, or `"ask"`.
+- `ide_refactor_safe_delete` - Preview or safely delete a symbol/file after usage discovery across languages (Java, Kotlin, Python, JS/TS, etc.); accepts legacy selectors, `symbolId`, or a nested `target`
+- `ide_move_file` - Move a file to a new directory using the IDE's refactoring engine. Automatically updates all references, imports, and package declarations across the project. Supports automatic directory creation and optional reference update toggle. Move conflicts come back as `warnings`. On a same-package move between modules/source roots (issue #360), imports naming the unchanged package that the IDE's usage rewrite removed from consuming Java files are restored (`JavaOnDemandImportGuard`, plugged into the headless processor via `MoveUsageGuard`) and reported in `warnings`; a destination outside every source root is also warned about.
 - `ide_reformat_code` - Reformat code using project code style (.editorconfig, IDE settings). Supports optional import optimization and code rearrangement. (disabled by default)
 - `ide_optimize_imports` - Optimize imports (remove unused, organize) without reformatting code. Equivalent to IDE's Ctrl+Alt+O. (disabled by default)
 - `ide_structural_search_replace` - Pattern-based code search and transformation using IntelliJ's Structural Search and Replace engine. Search-only when `replacePattern` is omitted. Optional `paths` restricts matching (and rewriting) to project-relative globs (`!` prefix excludes). Any language with an IntelliJ structural search profile installed (e.g., Java, Kotlin, Python, JS/TS). (disabled by default)
@@ -528,11 +542,11 @@ Tools are organized by IDE availability.
 - `ide_create_module` - Add a directory as an IntelliJ module with a content root, enabling code intelligence for non-Maven projects (TypeScript, plain directories, etc.). Supports optional directory exclusions. For Maven projects, use `ide_import_modules` instead. (disabled by default)
 - `ide_open_project` - Open a project by absolute path and wait until indexing completes (`timeoutSeconds`, default 600). Idempotent for already-open projects. Pass `autoLink: true` to automatically link an unlinked Maven/Gradle build system after opening. (disabled by default)
 - `ide_install_plugin` - Install a plugin zip into the IDE, replacing any existing version; auto-detects `build/distributions/*.zip` when no path is given (disabled by default)
-- `ide_restart` - Restart the IDE; terminates the MCP connection. Call after `ide_install_plugin` (disabled by default)
+- `ide_restart` - Restart the IDE. The MCP server shuts down during restart; poll `ide_index_status` after ~30s to confirm it is back, then continue. Typical use: `ide_install_plugin` → `ide_restart` → poll → verify. (disabled by default)
 
 **Lifecycle Management Tools (All Supported JetBrains IDEs):**
 
-Manage which open projects the MCP server keeps active, in the background, dormant, or closed (behavior gated on the `lifecycleEnabled` setting):
+Manage which open projects the MCP server keeps active, in the background, dormant, or closed (behavior gated on the `lifecycleEnabled` setting). Every tool call with `participatesInLifecycle` restarts the project's background→dormant countdown (`ProjectModeService.wakeForMcp`); the countdown only runs while the window is unfocused. A dormant transition closes the editor tabs but records them in the service's persisted state and reopens them on the next transition to `active` (window focus) or on release — never on an MCP wake (issue #369):
 - `ide_project_status` - Report the status of all known projects (open + lifecycle-managed) in one table
 - `ide_enroll_all_projects` - Enroll all currently open projects in MCP lifecycle management (disabled by default)
 - `ide_get_project_modes` - List all MCP-managed projects and their current lifecycle mode (disabled by default)
@@ -546,11 +560,11 @@ Manage which open projects the MCP server keeps active, in the background, dorma
 **Extended Navigation Tools (Language-Aware):**
 
 These activate based on available language plugins (Java, Python, JavaScript/TypeScript, Go, PHP, Rust, Markdown):
-- `ide_type_hierarchy` - Get type hierarchy for a class (Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
-- `ide_call_hierarchy` - Get call hierarchy for a method (Java, Kotlin, Python, JS/TS, Go, PHP, Rust). Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
+- `ide_type_hierarchy` - Get type hierarchy for a class with bounded BFS pages and cursors (Java, Kotlin, Python, JS/TS, Go, PHP, Rust)
+- `ide_call_hierarchy` - Get call hierarchy for a method with bounded BFS pages and cursors (Java, Kotlin, Python, JS/TS, Go, PHP, Rust). Supports `language`+`symbol` as an alternative to `file`+`line`+`column`.
 - `ide_find_implementations` - Find implementations of interface/method (Java, Kotlin, Python, JS/TS, PHP, Rust — not Go). Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
 - `ide_find_super_methods` - Find methods that a given method overrides/implements (Java, Kotlin, Python, JS/TS, PHP — not Go, Rust). Supports `language`+`symbol` as alternative to `file`+`line`+`column`.
-- `ide_file_structure` - Get hierarchical file structure similar to IDE's Structure view with start/end line numbers (Java, Kotlin, Python, JS/TS, Markdown) (disabled by default)
+- `ide_file_structure` - Get legacy file structure text; opt into structured nodes and exact handles with `includeNodes`/`includeSymbolIds` (disabled by default)
 
 **Multi-Language Code Editing Tools:**
 - `ide_edit_member` - Replace an entire member declaration (signature + body) with new content (Java, Kotlin, Python, JS/TS, Go, PHP, Rust) (disabled by default)
@@ -559,6 +573,7 @@ These activate based on available language plugins (Java, Python, JavaScript/Typ
 
 **Java/Kotlin-Only Tools:**
 - `ide_list_tests` - List all test methods/classes discovered by the IDE's test framework extension points (JUnit, TestNG, etc.). Optional `file` parameter limits scan to a single file. Returns entries with className, methodName, framework, file path, and line number. Requires Java plugin — the `com.intellij.testFramework` extension point is declared by the Java plugin. (disabled by default)
+
 
 **Kotlin Conversion Tools:**
 - `ide_convert_java_to_kotlin` - Convert Java files to Kotlin using IntelliJ's built-in J2K converter. Supports full file conversion with automatic formatting and import optimization. Handles classes, interfaces, methods, generics, Java 8+ features (lambdas, streams). Returns list of created .kt files and conversion warnings. Requires both Java and Kotlin plugins. (disabled by default)
@@ -612,13 +627,16 @@ The plugin supports cursor-based pagination for search tools that return flat re
 - `PaginationService` (`server/PaginationService.kt`): Application-level light service managing cursor cache
 - Cursor tokens are opaque, immutable, base64url-encoded strings containing `{entryId}:{offset}:{pageSize}`
 - Same cursor token always returns the same page (idempotent, safe for retries)
-- Each response includes `nextCursor` for the next page
+- Responses include `nextCursor` only while the cached snapshot can safely serve another page;
+  `hasMore: true` with no cursor means the search may have more results but must be restarted with
+  narrower parameters (for example, after staleness or the hard cache cap)
 
 **Cache lifecycle:**
 - Over-collection: tools collect 500 results internally, serve in configurable page sizes (default varies per tool)
 - Inactivity-based TTL: 10 minutes of idle time before cursor expires
 - LRU eviction: max 20 active cursors
-- Max 5,000 cached results per cursor; beyond this, `hasMore` returns false
+- Max 5,000 cached results per cursor; at the cap, `hasMore` remains true but `nextCursor` is absent,
+  so callers must start a narrower fresh search
 - Staleness detection via `PsiModificationTracker` — `stale: true` in response if PSI changed
 
 **Tool integration pattern:**
@@ -630,6 +648,69 @@ The plugin supports cursor-based pagination for search tools that return flat re
 **Schema:** All parameters are optional in the schema (no `required` array) because the Anthropic API does not support `anyOf`/`oneOf` at the top level. Validation is done at runtime — if `cursor` is absent, the tool checks for its required search params and returns an error if missing.
 
 **Backward compatibility:** Old `limit`/`maxResults` parameters work as aliases for `pageSize`. Legacy cursors (without embedded pageSize) are still decodable but require an explicit `pageSize` parameter.
+
+### Bounded hierarchy pages with legacy tree compatibility
+
+Without `maxNodes` or `cursor`, call/type hierarchies keep nested trees and legacy limits.
+Explicit pagination returns bounded breadth-first pages with traversal-local `nodeId`,
+`parentId`, and `depth`. Continuations are scoped to the project, tool, and server session.
+A continuation budget limit preserves the computed page and reports `truncationReason`;
+narrow the query when `hasMore=true` has no cursor. Cancellation and indexing transitions
+propagate through reflective handlers instead of completing an empty hierarchy.
+
+### Symbol handles across navigation and member editing
+
+Class, symbol, reference, implementation, and super-method queries expose opaque handles for
+their exact declarations. Reference and implementation queries plus `ide_edit_member` and
+`ide_replace_member` accept the shared target selectors. Cached search pages remain marked
+`stale=true` after PSI edits and rebind handles from their exact smart pointers when returned;
+deleted declarations and handles from another project or server session are rejected. Successful
+member edits return current declaration metadata. Kotlin abstract/sealed declarations retain
+`ABSTRACT_CLASS`, while anonymous implementations report a useful source location without an
+invented qualified name.
+
+`ide_file_structure` keeps the legacy `structure` response by default and avoids returning a
+structured-node payload or allocating handles. Use `includeNodes=true`
+for structured declarations, and `includeSymbolIds=true` when exact handles are needed (it implies
+`includeNodes`). Handle allocation is opt-in and capped at 100 per response; lower it with
+`maxSymbolIds` (1–100). Large responses report `symbolIdsTruncated` and `symbolIdsOmitted`.
+
+### Structured Lookup Targets
+
+Definition, symbol-info, reference, implementation, and member-edit tools accept an additive
+nested `target` with exactly one
+variant: `{ "symbolId": "sym_..." }`, `{ "position": { "file": "src/Foo.java", "line": 3,
+"column": 8 } }`, or `{ "qualifiedName": "com.example.Foo#bar", "language": "Java" }`.
+Do not mix `target` with top-level selectors. Existing top-level requests remain valid.
+Validation runs before PSI synchronization, and `target.symbolId` routes to its owning project.
+
+### Rename Preview
+
+`ide_refactor_rename` accepts `dryRun: true` with legacy selectors, `symbolId`, or a nested
+`target`. It returns `canApply`, current target metadata, `plannedChange`, `affectedFiles`, usage
+and conflict counts, `warnings`, and `elapsedMs` without entering the source-write phase, saving
+documents, or creating an undo command. Preview and apply share conflict discovery and automatic
+rename selection.
+
+### Safe-delete Preview
+
+`ide_refactor_safe_delete` accepts the same `dryRun: true` preview contract with legacy selectors,
+`symbolId`, or a nested `target`. It reports the planned symbol/file deletion, usage blockers, and
+current applicability without deleting or saving anything or invalidating a handle. Successful
+symbol deletion selected by an incoming handle returns it as `invalidatedSymbolId`. Files with no
+discovered top-level declarations retain the existing apply eligibility but carry an
+incomplete-discovery warning; `force` can explicitly override usages or a failed usage search.
+
+### Change-signature Preview
+
+`ide_change_signature` accepts the same exact/nested targets and `dryRun: true` preview contract.
+Preview reports the current and requested signatures, affected declarations/callers, conflicts,
+read-only scope, missing required caller/delegate arguments, and interactive overrider decisions
+without running the processor. Apply runs the same conflict and safety checks before editing.
+Successful apply returns current `updatedSymbol` metadata. Return-type changes with overriders
+are conservatively refused, even where narrower overriding return types could be retained.
+Unlike Kotlin targets, Java override targets do not redirect to the base; select the Java base
+explicitly for hierarchy-wide changes.
 
 ### Search Collection Pattern (Processor)
 

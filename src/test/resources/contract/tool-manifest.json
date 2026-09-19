@@ -38,7 +38,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "rebuild":
@@ -68,13 +68,14 @@ description:
   
   Rust note: "callers" direction works well; "callees" direction may have limited results due to Rust plugin PSI resolution constraints.
   
-  Returns: recursive tree with method signatures, file locations (line/column), and nested call relationships.
+  Returns a legacy nested tree. Set maxNodes for bounded BFS pages with nodeId/parentId/depth and symbolId handles. Follow cursor; if absent with hasMore=true, inspect truncationReason and narrow the query.
   
   Target (mutually exclusive):
+  - symbolId: opaque handle returned by a previous semantic call
   - file + line + column: position-based lookup
   - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript)
   
-  Parameters: direction (required): "callers" or "callees". depth (optional, default: 3, max: 5). scope (optional, default: "project_files"; supported: project_files, project_and_libraries, project_production_files, project_test_files).
+  direction: callers or callees (required for fresh queries). depth: default 3, max 5. maxNodes: 1–500; omitted means legacy per-node limits, cursor pages default to 100. scope defaults to project_files.
   
   Example: {"file": "src/Service.java", "line": 42, "column": 10, "direction": "callers"}
   Example: {"language": "Java", "symbol": "com.example.Service#processRequest(String)", "direction": "callers", "scope": "project_and_libraries"}
@@ -89,6 +90,11 @@ schema:
         "description": "1-based column number",
         "type": "integer"
       },
+      "cursor":
+      {
+        "description": "Opaque session/project-bound continuation from the previous hierarchy page. Other search parameters are ignored.",
+        "type": "string"
+      },
       "depth":
       {
         "description": "How many levels deep to traverse the call hierarchy (default: 3, max: 5)",
@@ -96,7 +102,7 @@ schema:
       },
       "direction":
       {
-        "description": "Direction: 'callers' (methods that call this method) or 'callees' (methods this method calls)",
+        "description": "Direction for a fresh query: 'callers' or 'callees'. Omit when cursor is provided.",
         "enum":
         [
           "callers",
@@ -131,9 +137,14 @@ schema:
         "description": "1-based line number",
         "type": "integer"
       },
+      "maxNodes":
+      {
+        "description": "Opt into BFS paging with 1–500 nodes. Omit for a legacy tree; cursor default: 100.",
+        "type": "integer"
+      },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "scope":
@@ -152,12 +163,64 @@ schema:
       {
         "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
         "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
-    "required":
-    [
-      "direction"
-    ],
     "type": "object"
   }
 
@@ -170,6 +233,7 @@ description:
   New parameters get a default value inserted at all call sites.
   
   Examples:
+  - By handle: {"symbolId": "<opaque-id>", "newName": "renamed"}
   - Add parameter: {"file": "src/Service.java", "line": 15, "column": 10, "newParameters": [{"oldIndex": 0, "name": "id", "type": "String"}, {"oldIndex": -1, "name": "validate", "type": "boolean", "defaultValue": "true"}]}
   - Change return type: {"file": "src/Service.java", "line": 15, "column": 10, "newReturnType": "Optional<User>"}
   - Python rename: {"file": "src/service.py", "line": 10, "column": 5, "newName": "new_service"}
@@ -182,15 +246,32 @@ schema:
         "description": "1-based column number",
         "type": "integer"
       },
+      "dryRun":
+      {
+        "description": "Resolve and validate the method, then discover usages/conflicts without modifying files. Default: false.",
+        "type": "boolean"
+      },
       "file":
       {
-        "description": "Path to file containing the method. REQUIRED.",
+        "description": "Path to file containing the method. Required with line+column; omit when symbolId is used.",
         "type": "string"
       },
       "generateDelegate":
       {
         "description": "Generate a delegation method with the old signature. Default: false.",
         "type": "boolean"
+      },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
+        "type": "string"
       },
       "line":
       {
@@ -223,16 +304,71 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
+      },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
-    "required":
-    [
-      "file",
-      "line",
-      "column"
-    ],
     "type": "object"
   }
 
@@ -257,7 +393,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -297,7 +433,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -353,7 +489,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -368,15 +504,15 @@ schema:
 description:
   Get code diagnostics from multiple sources: file analysis (errors, warnings, intentions), build output (compiler errors/warnings from last build), and test results (from open test run tabs).
   
-  Returns: problems with severity and location, available intentions/quick fixes, build errors, and test results with error messages and stack traces. The analysisMode field reports which provider produced the file problems: "open_daemon" (file open in an editor) or "closed_batch" (public batch analysis); null when no analysis ran.
+  Returns: problems with severity and location, available intentions/quick fixes, build errors, and test results with error messages and stack traces. Single-file calls report legacy top-level analysis metadata. Multi-file calls return one aggregate problems list plus fileAnalyses entries with state, reason, mode, returned problemCount, and problemsTruncated metadata for each file. States are analyzed, timed_out, failed, skipped (not eligible), not_analyzed (not started before the shared deadline), and not_found. Code problems share the configurable maxProblems response cap; top-level problemsTruncated reports omitted problems. An analyzed state does not imply complete output: re-query truncated files individually, narrowing startLine/endLine if needed.
   
-  At least one source must be active: provide 'file' for code analysis, 'includeBuildErrors' for build output, or 'includeTestResults' for test results. Can combine all three.
+  At least one source must be active: provide exactly one of 'file' or 'files' for code analysis, 'includeBuildErrors' for build output, or 'includeTestResults' for test results. Can combine file analysis with build and test results. A multi-file call accepts at most 100 supplied paths, all sharing one analysis timeout budget; aliases and duplicate paths are analyzed only once.
   
-  File analysis uses fresh daemon highlights for files that are already open in an editor. Closed files use public batch analysis, so weak warnings and quick-fix intentions may be less complete unless the file is open. The analyzed file is re-read from disk first, so results reflect edits made outside the IDE without calling ide_sync_files. For diagnostics across many files or the whole project with per-file coverage metadata, use ide_project_diagnostics.
+  File analysis uses fresh daemon highlights for files that are already open in an editor. Closed files use public batch analysis, so weak warnings and quick-fix intentions may be less complete unless the file is open. If an open-editor daemon does not run and returns before the deadline, analysis falls back to the batch path; if it consumes the shared timeout, the result is timed_out without starting a second budget. The analyzed file is re-read from disk first, so results reflect edits made outside the IDE without calling ide_sync_files. For diagnostics across many files or the whole project with per-file coverage metadata, use ide_project_diagnostics.
   
-  Parameters: file (optional, enables code analysis), line + column (optional, for intentions, requires file), startLine/endLine (optional, requires file), includeBuildErrors (optional), includeTestResults (optional), severity (optional, default 'all'), testResultFilter (optional, default 'failed'), maxBuildErrors (optional, default 100), maxTestResults (optional, default 100).
+  Parameters: file or files (mutually exclusive, relative or in-project absolute paths), line + column (optional, for intentions, single file only), startLine/endLine (optional, single file only), includeBuildErrors (optional), includeTestResults (optional), severity (optional, default 'all'), maxProblems (optional, default 100, max 500), testResultFilter (optional, default 'failed'), maxBuildErrors (optional, default 100), maxTestResults (optional, default 100).
   
-  Example: {"file": "src/MyClass.java"} or {"includeBuildErrors": true, "severity": "errors"} or {"file": "src/MyClass.java", "includeBuildErrors": true, "includeTestResults": true}
+  Example: {"file": "src/MyClass.java"} or {"files": ["src/A.java", "src/B.java"]} or {"includeBuildErrors": true, "severity": "errors"}
 schema:
   {
     "properties":
@@ -393,8 +529,19 @@ schema:
       },
       "file":
       {
-        "description": "Path to file relative to project root (e.g., 'src/main/java/com/example/MyClass.java'). Optional — enables per-file code analysis.",
+        "description": "Project-relative or in-project absolute file path. Optional — enables per-file code analysis.",
         "type": "string"
+      },
+      "files":
+      {
+        "description": "Project-relative or in-project absolute file paths to analyze under one shared timeout budget (max 100 supplied paths). Aliases and duplicates are analyzed once. Mutually exclusive with 'file'.",
+        "items":
+        {
+          "type": "string"
+        },
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array"
       },
       "includeBuildErrors":
       {
@@ -416,6 +563,11 @@ schema:
         "description": "Max build errors to return. Default: 100, max: 500.",
         "type": "integer"
       },
+      "maxProblems":
+      {
+        "description": "Max code problems to return. Default: 100, max: 500.",
+        "type": "integer"
+      },
       "maxTestResults":
       {
         "description": "Max test results to return. Default: 100, max: 500.",
@@ -423,7 +575,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "severity":
@@ -468,9 +620,17 @@ description:
   {"file": "src/Worker.java", "class": "Worker", "member": "Worker", "content": "public interface Worker<T> extends Runnable { ... }"}
   
   The content should be the complete replacement including modifiers, type, name, and body.
+  It must contain exactly one syntactically valid declaration of the original category,
+  optionally surrounded by comments. Nested declarations are allowed. Invalid or ambiguous
+  content is rejected before editing; use ide_refactor_safe_delete for deletion.
   Auto-reformats the changed range by default.
   
+  Target the declaration with nested target ({symbolId}, {position: {file, line, column}},
+  or {qualifiedName, language}), top-level symbolId, top-level language + symbol, or the
+  legacy file + member selector. Do not combine selector forms.
   Examples:
+  - {"symbolId": "<opaque-id>", "content": "public void renamed() {}"}
+  - {"target": {"position": {"file": "src/Main.java", "line": 12, "column": 17}}, "content": "public void renamed() {}"}
   - {"file": "src/Main.java", "class": "Main", "member": "process", "content": "public void process(String input, boolean validate) {\n    if (validate) check(input);\n}"}
   - {"file": "src/Config.kt", "class": "Config", "member": "timeout", "content": "val timeout: Duration = Duration.ofSeconds(30)"}
   - {"file": "src/Service.java", "member": "Service", "content": "public class Service<T> implements Serializable { ... }"}
@@ -487,12 +647,24 @@ schema:
       },
       "content":
       {
-        "description": "The complete replacement member declaration including modifiers, type, name, and body.",
+        "description": "Exactly one complete, syntactically valid declaration of the original category, including modifiers, type, name, and body. Surrounding comments are allowed.",
         "type": "string"
       },
       "file":
       {
-        "description": "Path to file relative to project root. REQUIRED.",
+        "description": "Path to file relative to project root. Required with member selectors; omit when symbolId is used.",
+        "type": "string"
+      },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
         "type": "string"
       },
       "line":
@@ -502,7 +674,7 @@ schema:
       },
       "member":
       {
-        "description": "Name of the method, function, field, or property to replace entirely.",
+        "description": "Name of the method, function, field, or property to replace entirely. Required unless symbolId is used.",
         "type": "string"
       },
       "parameterCount":
@@ -512,19 +684,78 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "reformat":
       {
         "description": "Auto-reformat the changed range and optimize imports. Default: true.",
         "type": "boolean"
+      },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "required":
     [
-      "file",
-      "member",
       "content"
     ],
     "type": "object"
@@ -545,7 +776,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -560,11 +791,13 @@ description:
   
   Supports: Java, Kotlin, Python, JavaScript, TypeScript, PHP, Markdown
   
-  Returns: Formatted tree string with element types, modifiers, signatures, and line numbers.
+  Returns: The legacy formatted tree string. Set includeNodes=true for structured nodes;
+  set includeSymbolIds=true to bind exact handles for those nodes. Nodes and handles are
+  opt-in to keep ordinary outline responses small and avoid registry churn.
   
   Parameters: file (required) - Path relative to project root
   
-  Example: {"file": "src/main/java/com/example/MyClass.java"}
+  Example: {"file": "src/main/java/com/example/MyClass.java", "includeNodes": true}
 schema:
   {
     "properties":
@@ -574,9 +807,24 @@ schema:
         "description": "Path to file relative to project root (e.g., 'src/main/java/com/example/MyClass.java'). REQUIRED.",
         "type": "string"
       },
+      "includeNodes":
+      {
+        "description": "Include structured declaration nodes. Default: false.",
+        "type": "boolean"
+      },
+      "includeSymbolIds":
+      {
+        "description": "Bind exact symbolId handles for returned nodes; implies includeNodes. Default: false.",
+        "type": "boolean"
+      },
+      "maxSymbolIds":
+      {
+        "description": "Maximum handles to allocate when includeSymbolIds=true (1–100). Default: 100.",
+        "type": "integer"
+      },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -641,7 +889,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "query":
@@ -671,9 +919,8 @@ description:
   
   Returns: file path, line/column of definition, code preview, and symbol name.
   
-  Target (mutually exclusive):
-  - file + line + column: position-based lookup
-  - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript)
+  Target (choose one): symbolId; file + line + column; or language + symbol (supported languages: Java, Kotlin, JavaScript, TypeScript).
+  This tool also accepts the equivalent nested target with exactly one of symbolId, position, or qualifiedName + language. Do not mix request shapes.
   
   Example: {"file": "src/Main.java", "line": 15, "column": 10}
   Example: {"language": "Java", "symbol": "com.example.MyClass#processData(String)"}
@@ -722,13 +969,69 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "symbol":
       {
         "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
         "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"
@@ -772,7 +1075,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "query":
@@ -807,13 +1110,16 @@ description:
   Supports pagination: first call returns results + nextCursor. Pass cursor to get the next page.
   
   Target (mutually exclusive):
-  - file + line + column: position-based lookup (necessary for fresh search, ignored when cursor is provided)
-  - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript; necessary for fresh search, ignored when cursor is provided)
+  - target: nested selector containing exactly one of symbolId, position {file, line, column}, or qualifiedName + language (necessary for fresh search, ignored when cursor is provided)
+  - top-level symbolId: opaque handle returned by a previous semantic call (necessary for fresh search, ignored when cursor is provided)
+  - top-level file + line + column: position-based lookup (necessary for fresh search, ignored when cursor is provided)
+  - top-level language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript; necessary for fresh search, ignored when cursor is provided)
   - cursor: pagination cursor from a previous response
   
   Parameters: scope (optional, default: "project_files"; supported: project_files, project_and_libraries, project_production_files, project_test_files), pageSize (optional, default: 100, max: 500).
   
   Example: {"file": "src/Repository.java", "line": 8, "column": 18}
+  Example: {"target": {"qualifiedName": "com.example.Repository", "language": "Java"}}
   Example: {"language": "Java", "symbol": "com.example.Repository", "scope": "project_and_libraries"}
   Example: {"language": "JavaScript", "symbol": "src/interfaces#IRepository"}
   Example: {"language": "PHP", "symbol": "\\App\\Contracts\\Repository"}
@@ -865,7 +1171,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "scope":
@@ -884,6 +1190,62 @@ schema:
       {
         "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
         "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"
@@ -898,13 +1260,16 @@ description:
   Supports pagination: first call returns results + nextCursor. Pass cursor to get the next page.
   
   Target (mutually exclusive):
-  - file + line + column: position-based lookup (necessary for fresh search, ignored when cursor is provided)
-  - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript; necessary for fresh search, ignored when cursor is provided)
+  - target: nested selector containing exactly one of symbolId, position {file, line, column}, or qualifiedName + language (necessary for fresh search, ignored when cursor is provided)
+  - top-level symbolId: opaque handle returned by a previous semantic call (necessary for fresh search, ignored when cursor is provided)
+  - top-level file + line + column: position-based lookup (necessary for fresh search, ignored when cursor is provided)
+  - top-level language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript; necessary for fresh search, ignored when cursor is provided)
   - cursor: pagination cursor from a previous response
   
   Parameters: scope (optional, default: "project_files"; supported: project_files, project_and_libraries, project_production_files, project_test_files), paths (optional array of project-relative globs restricting results, '!' prefix excludes), pageSize (optional, default: 100, max: 500).
   
   Example: {"file": "src/UserService.java", "line": 25, "column": 18}
+  Example: {"target": {"position": {"file": "src/UserService.java", "line": 25, "column": 18}}}
   Example: {"file": "src/UserService.java", "line": 25, "column": 18, "paths": ["src/main/**", "!**/generated/**"]}
   Example: {"language": "Java", "symbol": "com.example.UserService#findUser(String)", "scope": "project_and_libraries"}
   Example: {"language": "TypeScript", "symbol": "src/api#default"}
@@ -962,7 +1327,7 @@ schema:
       },
       "paths":
       {
-        "description": "Project-relative path globs restricting the search, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' matches within a path segment, '**' crosses directories, a plain directory path includes everything beneath it, and a leading '!' excludes. Includes are unioned, then excludes are subtracted; with only excludes, everything else is searched. Combines with the tool's other filters (scope, filePattern). Because globs are project-relative, any include glob also drops results that have no project-relative path — library and jar hits under scope project_and_libraries; an exclude-only filter leaves those alone. An include glob whose literal directory prefix does not exist in the project, or resolves under a different relative name than it was written with, is reported as an error.",
+        "description": "Project-relative globs, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' stays within a segment, '**' crosses directories, plain directories include descendants, '!' excludes. Union includes, then subtract excludes; exclusion-only starts with all results. Combines with scope/filePattern. Includes omit library/jar hits without a project-relative path; exclusion-only keeps them. Include globs must have an existing literal directory prefix with the exact relative spelling.",
         "items":
         {
           "type": "string"
@@ -972,7 +1337,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "scope":
@@ -991,6 +1356,62 @@ schema:
       {
         "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
         "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"
@@ -1007,10 +1428,13 @@ description:
   Returns: full hierarchy chain from immediate parent (depth=1) to root, with file locations (line/column) and containing class info.
   
   Target (mutually exclusive):
-  - file + line + column: position-based lookup (position can be anywhere within the method body)
-  - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript)
+  - target: nested selector containing exactly one of symbolId, position {file, line, column}, or qualifiedName + language
+  - top-level symbolId: opaque handle returned by a previous semantic call
+  - top-level file + line + column: position-based lookup (position can be anywhere within the method body)
+  - top-level language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript)
   
   Example: {"file": "src/UserServiceImpl.java", "line": 25, "column": 10}
+  Example: {"target": {"symbolId": "<opaque-id>"}}
   Example: {"language": "Java", "symbol": "com.example.UserServiceImpl#getUser(String)"}
   Example: {"language": "TypeScript", "symbol": "src/service#UserService.getUser"}
   Example: {"language": "PHP", "symbol": "\\App\\Service\\UserService::find()"}
@@ -1047,13 +1471,69 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "symbol":
       {
         "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
         "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"
@@ -1104,7 +1584,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "query":
@@ -1143,7 +1623,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1168,7 +1648,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1190,7 +1670,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1261,7 +1741,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "reformat":
@@ -1307,7 +1787,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1328,9 +1808,11 @@ description:
   Use this to diagnose lifecycle health: understand why a project closed, whether auto-open
   worked, or which projects are cycling unexpectedly.
   
-  Event types: open, closed, transition, enroll, release, wake
+  Event types: open, closed, transition, enroll, release, wake, editors_closed, editors_restored
   Trigger values: focus_gained, focus_lost, timer:focus, timer:inactivity, timer:close,
                   mcp_call, auto_open, user
+  Events carry an optional `detail` — e.g. how long a project had no MCP call when the
+  inactivity timer fired, or how many editor tabs a dormant transition closed.
   
   Parameters:
   - limit: Number of recent events to return, newest first (default 50, max 500)
@@ -1352,7 +1834,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1401,7 +1883,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "waitSeconds":
@@ -1438,7 +1920,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1476,7 +1958,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1516,7 +1998,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1572,7 +2054,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "timeoutSeconds":
@@ -1608,7 +2090,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1680,7 +2162,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "severity":
@@ -1732,7 +2214,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -1765,7 +2247,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "qualifiedName":
@@ -1784,34 +2266,17 @@ schema:
 
 ## ide_refactor_rename
 description:
-  Rename a symbol or file and update all references across the project. Use instead of find-and-replace for safe, semantic renaming that handles all usages correctly. Supports undo (Ctrl+Z).
+  Rename a symbol or file and update references semantically across the project. Supports undo.
+  Supply newName and a symbol target (symbolId, position, or language+symbol), or file for file rename.
+  targetType="file" ignores placeholder coordinates and supports binary/Android resource files, updating resource references. Include the extension in newName.
+  Without targetType, omitted/null line+column selects file rename; both coordinates select a symbol.
   
-  Two modes:
-  - **Symbol rename** (`targetType="symbol"`, file + line + column + newName): Rename a symbol at a specific position. `line` and `column` are 1-based and must be provided.
-  - **File rename** (`targetType="file"`, file + newName): Rename the file itself. Any placeholder `line`/`column` values are ignored for mode selection. Works for all file types including binary files (images, etc.). Especially useful for Android resource files (.webp, .png, .xml in res/) where it updates all resource references across the project.
+  overrideStrategy: rename_base (default) includes base and overrides; rename_only_current limits to this declaration; ask opens an IDE chooser.
+  relatedRenamingStrategy: all (default), none, accessors_and_tests, or ask. Related elements can include accessors, parameters/fields, tests, variables and inheritors.
+  dryRun=true returns the planned changes, affected files, usages, conflicts and canApply without editing. Interactive ask strategies cannot produce an applicable headless preview.
+  Apply returns affected files and change count.
   
-  Backward compatibility: if `targetType` is omitted, null/null line+column still means file rename; provided line+column still means symbol rename.
-  
-  Automatically renames related elements: getters/setters, overriding methods, constructor parameters ↔ fields, test classes.
-  
-  When renaming a method that overrides a base method, the `overrideStrategy` parameter controls behavior:
-  - "rename_base" (default): Automatically renames the base method and all overrides. No dialog shown.
-  - "rename_only_current": Renames only the current method, leaving the base and other overrides unchanged.
-  - "ask": Shows the IDE's built-in dialog to let the user choose interactively.
-  
-  The `relatedRenamingStrategy` parameter controls automatic renaming of related symbols (e.g., same-named properties on unrelated classes, getters/setters, test classes, variables):
-  - "all" (default): Automatically rename all related symbols. Current behavior.
-  - "none": Rename only the targeted symbol. Skip all automatic related renames.
-  - "accessors_and_tests": Only rename getters/setters and test classes/methods. Skip variables, inheritors, overloads, and parameters on unrelated classes.
-  - "ask": Show the IDE dialog for each related rename for interactive choice.
-  
-  Returns: affected files list and change count. Modifies source files.
-  
-  Parameters: file + newName (required). targetType is optional; line + column are only needed for symbol rename. overrideStrategy + relatedRenamingStrategy (optional).
-  
-  Examples:
-  - Symbol rename: {"file": "src/UserService.java", "targetType": "symbol", "line": 15, "column": 18, "newName": "CustomerService"}
-  - File rename: {"file": "res/mipmap-hdpi/ic_launcher.webp", "targetType": "file", "newName": "ic_app_icon.webp"}
+  Example: {"file":"src/UserService.java","line":15,"column":18,"newName":"CustomerService"}
 schema:
   {
     "properties":
@@ -1821,9 +2286,26 @@ schema:
         "description": "1-based column number. Required for symbol rename; omit for file rename unless `targetType=file`.",
         "type": "integer"
       },
+      "dryRun":
+      {
+        "description": "Resolve and validate the target, then discover usages/conflicts without modifying files. Default: false.",
+        "type": "boolean"
+      },
       "file":
       {
-        "description": "Path to file relative to project root. REQUIRED.",
+        "description": "Path to file relative to project root. Required for file rename or position-based symbol rename; omit when symbolId is used.",
+        "type": "string"
+      },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
         "type": "string"
       },
       "line":
@@ -1849,7 +2331,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "relatedRenamingStrategy":
@@ -1864,6 +2346,67 @@ schema:
         ],
         "type": "string"
       },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "targetType":
       {
         "description": "What to rename: 'symbol' (requires 1-based line+column) or 'file' (renames the file itself and ignores placeholder line/column values). If omitted, legacy behavior applies.",
@@ -1877,7 +2420,6 @@ schema:
     },
     "required":
     [
-      "file",
       "newName"
     ],
     "type": "object"
@@ -1888,7 +2430,8 @@ description:
   Delete a symbol or file safely by first checking for usages. Use when removing code to avoid breaking references.
   
   Modes:
-  - target_type='symbol' (default): Delete the symbol at line/column (REQUIRED: file, line, column).
+  - target_type='symbol' (default): Delete the exact symbol selected by symbolId,
+    language + symbol, or file + line/column. The equivalent nested target is also supported.
     If position is whitespace/comment, returns nearby symbol suggestions.
   - target_type='file': Delete the entire file (REQUIRED: file only).
     Only succeeds if no symbols have external usages. Internal call chains don't block deletion.
@@ -1896,9 +2439,11 @@ description:
   Behavior: If usages exist and force=false, returns the usage list instead of deleting.
   Use force=true to delete anyway (may break compilation).
   
-  Returns: success status and affected files, OR blocking usages list, OR nearby symbol suggestions.
+  With dryRun=true, returns the shared non-mutating refactoring preview.
+  Otherwise returns success status and affected files, a blocking usages list, or nearby symbol suggestions.
   
   Examples:
+  - Symbol ID: {"symbolId": "<opaque-id>"}
   - Symbol: {"file": "src/OldClass.java", "line": 10, "column": 14}
   - Symbol with force: {"file": "src/OldClass.java", "line": 10, "column": 14, "force": true}
   - File: {"file": "src/UnusedUtils.java", "target_type": "file"}
@@ -1908,12 +2453,17 @@ schema:
     {
       "column":
       {
-        "description": "1-based column number. REQUIRED when target_type='symbol' (default).",
+        "description": "1-based column number for position-based symbol deletion. Required with file and line.",
         "type": "integer"
+      },
+      "dryRun":
+      {
+        "description": "Resolve the target and check usages without deleting anything. Default: false.",
+        "type": "boolean"
       },
       "file":
       {
-        "description": "Path to file relative to project root. REQUIRED.",
+        "description": "Path to file relative to project root. Required for file deletion or position-based symbol deletion; omit when symbolId is used.",
         "type": "string"
       },
       "force":
@@ -1922,20 +2472,93 @@ schema:
         "description": "Force deletion even if usages exist. Default: false. Use with caution!",
         "type": "boolean"
       },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
+        "type": "string"
+      },
       "line":
       {
-        "description": "1-based line number where the symbol is located. REQUIRED when target_type='symbol' (default).",
+        "description": "1-based line number for position-based symbol deletion. Required with file and column.",
         "type": "integer"
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
+      },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "target_type":
       {
         "default": "symbol",
-        "description": "What to delete: 'symbol' (default, requires line+column) or 'file' (deletes entire file if no external usages).",
+        "description": "What to delete: 'symbol' (default, requires one symbol selector) or 'file' (requires only file and deletes it if no external usages block the operation).",
         "enum":
         [
           "symbol",
@@ -1944,10 +2567,6 @@ schema:
         "type": "string"
       }
     },
-    "required":
-    [
-      "file"
-    ],
     "type": "object"
   }
 
@@ -1986,7 +2605,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "rearrangeCode":
@@ -2022,7 +2641,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2059,7 +2678,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2092,7 +2711,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2107,10 +2726,15 @@ description:
   For fields/properties: replaces the initializer expression (after =).
   Auto-reformats the changed range by default.
   
-  Requires: file (always), member (always). class is optional for top-level members (Kotlin).
+  Target the declaration with nested target ({symbolId}, {position: {file, line, column}},
+  or {qualifiedName, language}), top-level symbolId, top-level language + symbol, or the
+  legacy file + member selector. Do not combine selector forms. class is optional for
+  top-level members (Kotlin).
   For overloaded methods, use parameterCount or line to disambiguate.
   
   Examples:
+  - {"symbolId": "<opaque-id>", "content": "return 42;"}
+  - {"target": {"qualifiedName": "com.example.Main#getName()", "language": "Java"}, "content": "return this.name;"}
   - {"file": "src/Main.java", "class": "Main", "member": "getName", "content": "return this.name;"}
   - {"file": "src/Config.kt", "member": "defaultPort", "content": "8080"}
   - {"file": "src/calc.py", "class": "Calculator", "member": "add", "content": "return a + b + 1"}
@@ -2131,7 +2755,19 @@ schema:
       },
       "file":
       {
-        "description": "Path to file relative to project root. REQUIRED.",
+        "description": "Path to file relative to project root. Required with member selectors; omit when symbolId is used.",
+        "type": "string"
+      },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
         "type": "string"
       },
       "line":
@@ -2141,7 +2777,7 @@ schema:
       },
       "member":
       {
-        "description": "Name of the method, function, field, or property to replace the body/initializer of.",
+        "description": "Name of the method, function, field, or property to replace the body/initializer of. Required unless symbolId is used.",
         "type": "string"
       },
       "parameterCount":
@@ -2151,19 +2787,78 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "reformat":
       {
         "description": "Auto-reformat the changed range and optimize imports. Default: true.",
         "type": "boolean"
+      },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "required":
     [
-      "file",
-      "member",
       "content"
     ],
     "type": "object"
@@ -2204,7 +2899,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "regex":
@@ -2236,12 +2931,13 @@ schema:
 description:
   Restart the IDE.
   
-  WARNING: this terminates the MCP server. The connection to this IDE will
-  drop immediately and no response will be received after the restart is
-  initiated. Call this as a final step — do not expect to execute further
-  tool calls in the same session.
+  The MCP server shuts down during the restart. Tool calls will fail until
+  the IDE finishes relaunching (typically 30-60 seconds). After that, the
+  Streamable HTTP transport reconnects automatically — poll ide_index_status
+  until it responds, then continue with follow-up commands.
   
-  Typical use: call ide_install_plugin, then ide_restart.
+  Typical use: call ide_install_plugin, then ide_restart, then poll
+  ide_index_status after ~30 seconds to confirm the IDE is back.
   
   Parameters:
   - project_path (optional): only needed when multiple projects are open.
@@ -2251,7 +2947,7 @@ schema:
     {
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2318,7 +3014,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "runId":
@@ -2404,7 +3100,7 @@ schema:
       },
       "paths":
       {
-        "description": "Project-relative path globs restricting the search, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' matches within a path segment, '**' crosses directories, a plain directory path includes everything beneath it, and a leading '!' excludes. Includes are unioned, then excludes are subtracted; with only excludes, everything else is searched. Combines with the tool's other filters (scope, filePattern). Because globs are project-relative, any include glob also drops results that have no project-relative path — library and jar hits under scope project_and_libraries; an exclude-only filter leaves those alone. An include glob whose literal directory prefix does not exist in the project, or resolves under a different relative name than it was written with, is reported as an error.",
+        "description": "Project-relative globs, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' stays within a segment, '**' crosses directories, plain directories include descendants, '!' excludes. Union includes, then subtract excludes; exclusion-only starts with all results. Combines with scope/filePattern. Includes omit library/jar hits without a project-relative path; exclusion-only keeps them. Include globs must have an existing literal directory prefix with the exact relative spelling.",
         "items":
         {
           "type": "string"
@@ -2414,7 +3110,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "query":
@@ -2469,7 +3165,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2509,7 +3205,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2550,7 +3246,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2569,8 +3265,9 @@ description:
   - active: Full IntelliJ capabilities. Power Save OFF. Use before code review or active editing.
   - background: Power Save ON, index and MCP fully functional. Inspections and highlighting off.
     Default mode when MCP is working. Transitions here automatically after focus is lost.
-  - dormant: Power Save ON, editors closed, PSI caches dropped. Index stays loaded.
-    MCP calls auto-wake to background. Transitions here after 2 min of MCP inactivity.
+  - dormant: Power Save ON, editor tabs closed, PSI caches dropped. Index stays loaded.
+    MCP calls auto-wake to background without reopening tabs; the closed tabs reopen when
+    the project window regains focus. Transitions here after 2 min without MCP calls.
   - closed: Project fully closed. All memory freed. Auto-reopens on next MCP call (5-15s delay).
     Transitions here after 10 min of MCP inactivity.
   
@@ -2597,7 +3294,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2634,7 +3331,7 @@ schema:
       },
       "paths":
       {
-        "description": "Project-relative path globs restricting the search, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' matches within a path segment, '**' crosses directories, a plain directory path includes everything beneath it, and a leading '!' excludes. Includes are unioned, then excludes are subtracted; with only excludes, everything else is searched. Combines with the tool's other filters (scope, filePattern). Because globs are project-relative, any include glob also drops results that have no project-relative path — library and jar hits under scope project_and_libraries; an exclude-only filter leaves those alone. An include glob whose literal directory prefix does not exist in the project, or resolves under a different relative name than it was written with, is reported as an error.",
+        "description": "Project-relative globs, e.g. [\"src/main/**\", \"!**/*Test.kt\"]. '*' stays within a segment, '**' crosses directories, plain directories include descendants, '!' excludes. Union includes, then subtract excludes; exclusion-only starts with all results. Combines with scope/filePattern. Includes omit library/jar hits without a project-relative path; exclusion-only keeps them. Include globs must have an existing literal directory prefix with the exact relative spelling.",
         "items":
         {
           "type": "string"
@@ -2644,7 +3341,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "replacePattern":
@@ -2687,9 +3384,8 @@ description:
   
   Prefer this over ide_find_definition + reading the file when you only need the signature or the docs.
   
-  Target (mutually exclusive):
-  - file + line + column: position-based lookup, so overloads are addressable
-  - language + symbol: fully qualified symbol reference (supported languages: Java, Kotlin, JavaScript, TypeScript)
+  Target (choose one): symbolId; file + line + column; or language + symbol (supported languages: Java, Kotlin, JavaScript, TypeScript).
+  This tool also accepts the equivalent nested target with exactly one of symbolId, position, or qualifiedName + language. Do not mix request shapes.
   
   Example: {"file": "src/Main.java", "line": 15, "column": 10}
   Example: {"language": "Java", "symbol": "com.example.MyClass#processData(String)"}
@@ -2737,13 +3433,69 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "symbol":
       {
         "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
         "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"
@@ -2753,7 +3505,7 @@ schema:
 description:
   Force the IDE to synchronize its virtual file system and PSI cache with external file changes. Use when files were created, modified, or deleted outside the IDE (e.g., by coding agents) and other IDE tools report stale results or miss references in recently changed files.
   call it on-demand only when needed.
-  Parameters: paths (optional array of relative file/directory paths to sync; if omitted, syncs entire project), project_path (optional).
+  Parameters: paths (optional array of relative or in-project absolute file/directory paths to sync; if omitted, syncs entire project), project_path (optional).
   Example: {} or {"paths": ["src/main/java/com/example/NewFile.java", "src/main/java/com/example/ModifiedFile.java"]}
 schema:
   {
@@ -2761,7 +3513,7 @@ schema:
     {
       "paths":
       {
-        "description": "File or directory paths relative to project root to sync. If omitted, syncs the entire project.",
+        "description": "Paths relative to the selected project/content root, or absolute paths inside any project/content root. Rejects traversal, symlink escapes and unknown missing paths. Deleted paths known to VFS refresh their nearest existing parent. Relative paths are tried against the project base then module content roots when project_path is omitted or selects the project base; a selected content root confines relative paths to that root. Omit to sync the entire selected root.",
         "items":
         {
           "type": "string"
@@ -2770,7 +3522,7 @@ schema:
       },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       }
     },
@@ -2785,9 +3537,9 @@ description:
   
   Rust note: className parameter not supported for Rust; use file + line + column instead.
   
-  Returns: target class info, full supertype chain (recursive), and all subtypes in the project.
+  Returns a legacy nested tree. Set maxNodes for bounded BFS pages with nodeId/parentId/depth and symbolId handles. Follow cursor; if absent with hasMore=true, inspect truncationReason and narrow the query.
   
-  Parameters: Either className (e.g., "com.example.MyClass" for Java/PHP-style FQNs or "MyComponent" for JavaScript/TypeScript symbols) OR file + line + column. scope (optional, default: "project_files"; supported: project_files, project_and_libraries, project_production_files, project_test_files).
+  Target: symbolId, className, file+line+column, or language+symbol. maxNodes: 1–500; omitted means legacy limits, cursor pages default to 100. scope defaults to project_files. Cursor ignores other search parameters.
   
   Example: {"className": "com.example.UserService", "scope": "project_and_libraries"} or {"file": "src/MyClass.java", "line": 10, "column": 14}
 schema:
@@ -2804,6 +3556,11 @@ schema:
         "description": "1-based column number. Required if using file parameter.",
         "type": "integer"
       },
+      "cursor":
+      {
+        "description": "Opaque session/project-bound continuation from the previous hierarchy page. Other search parameters are ignored.",
+        "type": "string"
+      },
       "file":
       {
         "description": "Path to file relative to project root (e.g., 'src/main/java/com/example/MyClass.java'). Use with line and column.",
@@ -2814,14 +3571,31 @@ schema:
         "description": "Include supertypes/subtypes defined in generated sources (KSP/Dagger/annotation-processor output). Default: true — keep generated types in the hierarchy.",
         "type": "boolean"
       },
+      "language":
+      {
+        "description": "Language of the symbol. Required when using 'symbol' parameter. Currently supported languages: Java, Kotlin, JavaScript, TypeScript.",
+        "enum":
+        [
+          "Java",
+          "Kotlin",
+          "JavaScript",
+          "TypeScript"
+        ],
+        "type": "string"
+      },
       "line":
       {
         "description": "1-based line number where the class is defined. Required if using file parameter.",
         "type": "integer"
       },
+      "maxNodes":
+      {
+        "description": "Opt into BFS paging with 1–500 nodes. Omit for a legacy tree; cursor default: 100.",
+        "type": "integer"
+      },
       "project_path":
       {
-        "description": "Absolute path to the project root. Required when multiple projects are open. For workspace projects, use the sub-project path.",
+        "description": "Absolute project root; required with multiple open projects. For workspaces use the sub-project path.",
         "type": "string"
       },
       "scope":
@@ -2835,6 +3609,67 @@ schema:
           "project_test_files"
         ],
         "type": "string"
+      },
+      "symbol":
+      {
+        "description": "Fully qualified symbol reference. Format: 'com.example.ClassName' or 'com.example.ClassName#memberName'. Omit generics parameters.",
+        "type": "string"
+      },
+      "symbolId":
+      {
+        "description": "Reusable across edits/rename; expires with session, project, inactivity or eviction. Non-canonical: unequal handles may identify the same symbol.",
+        "type": "string"
+      },
+      "target":
+      {
+        "description": "Choose symbolId, position, or qualifiedName+language. Mutually exclusive with flat selector parameters.",
+        "properties":
+        {
+          "language":
+          {
+            "description": "Language used to resolve qualifiedName.",
+            "type": "string"
+          },
+          "position":
+          {
+            "properties":
+            {
+              "column":
+              {
+                "description": "1-based column number",
+                "type": "integer"
+              },
+              "file":
+              {
+                "description": "Project-relative file path, or a dependency/library absolute path or jar:// URL previously returned by the plugin.",
+                "type": "string"
+              },
+              "line":
+              {
+                "description": "1-based line number",
+                "type": "integer"
+              }
+            },
+            "required":
+            [
+              "file",
+              "line",
+              "column"
+            ],
+            "type": "object"
+          },
+          "qualifiedName":
+          {
+            "description": "Language-qualified symbol reference, for example com.example.Foo#bar.",
+            "type": "string"
+          },
+          "symbolId":
+          {
+            "description": "Same lifetime and non-canonical identity as top-level symbolId.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "type": "object"

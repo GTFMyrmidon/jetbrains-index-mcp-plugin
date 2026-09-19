@@ -133,7 +133,10 @@ class ToolsTest : McpPlatformTestCase() {
 
         val result = tool.execute(project, buildJsonObject { })
         assertTrue("Should error with missing params", result.isFailure)
-        assertTrue("Should mention required params", errorText(result).contains(ErrorMessages.SYMBOL_OR_POSITION_REQUIRED))
+        assertTrue(
+            "Should mention required params",
+            errorText(result).contains(ErrorMessages.SYMBOL_ID_OR_SYMBOL_OR_POSITION_REQUIRED)
+        )
     }
 
     fun testFindUsagesToolInvalidFile() = runBlocking {
@@ -218,7 +221,10 @@ class ToolsTest : McpPlatformTestCase() {
 
         val result = tool.execute(project, buildJsonObject { })
         assertTrue("Should error with missing params", result.isFailure)
-        assertTrue("Should mention required params", errorText(result).contains(ErrorMessages.SYMBOL_OR_POSITION_REQUIRED))
+        assertTrue(
+            "Should mention required params",
+            errorText(result).contains(ErrorMessages.SYMBOL_ID_OR_SYMBOL_OR_POSITION_REQUIRED)
+        )
     }
 
     fun testFindDefinitionToolPartialPosition() = runBlocking {
@@ -481,6 +487,9 @@ class ToolsTest : McpPlatformTestCase() {
             20,
             payload.calls.size
         )
+        assertEquals(20, payload.returnedNodes)
+        assertFalse("Legacy hierarchy response must not expose a pagination cursor", payload.hasMore)
+        assertNull("Legacy hierarchy response must not expose a continuation cursor", payload.cursor)
         assertTrue(
             "Fixture should exercise the >20 direct test callers regression",
             callersByName.keys.any { it.startsWith("loadPluginConfigFromTest") }
@@ -1430,7 +1439,10 @@ class ToolsTest : McpPlatformTestCase() {
 
         val result = tool.execute(project, buildJsonObject { })
         assertTrue("Should error with missing params", result.isFailure)
-        assertTrue("Should mention required params", errorText(result).contains(ErrorMessages.SYMBOL_OR_POSITION_REQUIRED))
+        assertTrue(
+            "Should mention required params",
+            errorText(result).contains(ErrorMessages.SYMBOL_ID_OR_SYMBOL_OR_POSITION_REQUIRED)
+        )
     }
 
     fun testFindSuperMethodsToolInvalidFile() = runBlocking {

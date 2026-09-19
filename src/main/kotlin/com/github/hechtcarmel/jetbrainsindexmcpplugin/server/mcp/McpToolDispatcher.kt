@@ -2,14 +2,18 @@ package com.github.hechtcarmel.jetbrainsindexmcpplugin.server.mcp
 
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ErrorMessages
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ParamNames
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.constants.ToolNames
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.exceptions.IndexNotReadyException
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.history.CommandEntry
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.history.CommandHistoryService
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.history.CommandStatus
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.EdtHeartbeatService
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.McpServerEpoch
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.ProjectResolver
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.server.SymbolIdRegistry
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.settings.McpSettings
 import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.ToolRegistry
+import com.github.hechtcarmel.jetbrainsindexmcpplugin.tools.UnifiedTargetArguments
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.asContextElement
@@ -22,6 +26,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.error
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -33,7 +38,7 @@ import kotlinx.serialization.json.contentOrNull
  * The MCP protocol itself — JSON-RPC framing, `initialize`, version negotiation, `tools/list`
  * dispatch — belongs to the SDK. What is left is IDE-specific and lives here:
  *
- *  1. the enabled/disabled gate from Settings → Index MCP Server → Available Tools
+ *  1. the enabled/disabled gate from Settings → Tools → Index MCP Server → Exposed Tools
  *  2. resolving `project_path` to an open [Project], reopening it if the lifecycle manager
  *     closed it
  *  3. recording the call in the per-project command history shown in the tool window
@@ -54,7 +59,10 @@ class McpToolDispatcher @JvmOverloads constructor(
     },
     private val updateHistory: (Project, String, CommandStatus, String?, Long?) -> Unit = { project, id, status, result, duration ->
         CommandHistoryService.getInstance(project).updateCommandStatus(id, status, result, duration)
-    }
+    },
+    private val symbolIdRegistryProvider: () -> SymbolIdRegistry = SymbolIdRegistry::getInstance,
+    private val serverEpochProvider: () -> McpServerEpoch = { McpServerEpoch.shared },
+    private val executionTimeoutMs: Long = 55_000L
 ) {
 
     private companion object {
@@ -65,7 +73,11 @@ class McpToolDispatcher @JvmOverloads constructor(
          * 100 KB+, and every entry would otherwise sit in the per-project deque.
          */
         const val HISTORY_RESULT_LIMIT = 4096
-
+        // These tools own their wait budget and must return an operation id for the next poll.
+        private val LONG_POLL_TOOLS = setOf(
+            ToolNames.BUILD_PROJECT, ToolNames.RUN_TESTS, ToolNames.PROJECT_DIAGNOSTICS,
+            ToolNames.OPEN_PROJECT, ToolNames.OPEN_WORKSPACE
+        )
         private fun defaultEdtCheck(): Long? {
             val app = ApplicationManager.getApplication() ?: return null
             if (app.isUnitTestMode) return null
@@ -82,12 +94,26 @@ class McpToolDispatcher @JvmOverloads constructor(
      * propagates.
      */
     suspend fun call(toolName: String, arguments: JsonObject): CallToolResult {
+        val serverEpoch = serverEpochProvider()
+        val requestEpoch = serverEpoch.capture()
+        return withContext(serverEpoch.requestContext(requestEpoch)) {
+            callInEpoch(toolName, arguments)
+        }
+    }
+
+    /** Executes every request phase against the one epoch captured by [call]. */
+    private suspend fun callInEpoch(
+        toolName: String,
+        arguments: JsonObject
+    ): CallToolResult {
+        val serverEpoch = serverEpochProvider()
+        val requestEpoch = serverEpoch.expectedForCurrentRequest()
         val tool = toolRegistry.getTool(toolName)
             ?: return CallToolResult.error(ErrorMessages.toolNotFound(toolName))
 
         if (!McpSettings.getInstance().isToolEnabled(toolName)) {
             return CallToolResult.error(
-                "Tool '$toolName' is disabled. Enable it in Settings → Index MCP Server → Available Tools."
+                "Tool '$toolName' is disabled. Enable it in Settings → Tools → Index MCP Server → Exposed Tools."
             )
         }
 
@@ -99,6 +125,12 @@ class McpToolDispatcher @JvmOverloads constructor(
             )
         }
 
+        // A pre-execution callback can cross a server restart boundary. Reject this request
+        // before resolving a project or allowing any registry-backed work to continue.
+        if (!serverEpoch.isCurrent(requestEpoch)) {
+            return CallToolResult.error("The MCP server session changed. Retry the request.")
+        }
+
         val projectPathElement = arguments[ParamNames.PROJECT_PATH]
         if (projectPathElement != null &&
             projectPathElement !is JsonNull &&
@@ -108,16 +140,59 @@ class McpToolDispatcher @JvmOverloads constructor(
         }
         val projectPath = (projectPathElement as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 
-        val projectResult = ProjectResolver.resolveOrOpen(projectPath)
-        if (projectResult.isError) return projectResult.errorResult!!
-        val project = projectResult.project!!
+        val schemaProperties = tool.inputSchema.properties
+        val acceptsSymbolId = schemaProperties?.containsKey(ParamNames.SYMBOL_ID) == true
+        val acceptsUnifiedTarget = UnifiedTargetArguments.isSupportedBy(tool.inputSchema)
+        // Cursor continuation owns target resolution. Do not route a paged request through
+        // unrelated symbol selectors that a client may have left in the argument object.
+        val ownsCursorContinuation = arguments.containsKey(ParamNames.CURSOR) &&
+            schemaProperties?.containsKey(ParamNames.CURSOR) == true
+        val executionArguments = if (ownsCursorContinuation) {
+            JsonObject(arguments - ParamNames.SYMBOL_ID - UnifiedTargetArguments.TARGET)
+        } else arguments
+
+        val symbolId = if (ownsCursorContinuation || (!acceptsSymbolId && !acceptsUnifiedTarget)) {
+            null
+        } else {
+            UnifiedTargetArguments.symbolIdForRouting(
+                arguments = arguments,
+                acceptsLegacySymbolId = acceptsSymbolId,
+                acceptsNestedTarget = acceptsUnifiedTarget
+            ).getOrElse {
+                return CallToolResult.error(it.message ?: "Invalid symbolId target")
+            }
+        }
+
+        val project = if (projectPath == null && symbolId != null) {
+            symbolIdRegistryProvider().projectFor(symbolId).getOrElse {
+                return CallToolResult.error(it.message ?: ErrorMessages.symbolIdExpired(symbolId))
+            }
+        } else {
+            val projectResult = ProjectResolver.resolveOrOpen(projectPath)
+            if (projectResult.isError) return projectResult.errorResult!!
+            projectResult.project!!
+        }
 
         val commandEntry = CommandEntry(toolName = toolName, parameters = arguments)
         recordHistorySafely(project, commandEntry)
 
         val startTime = System.currentTimeMillis()
         return try {
-            val result = withIdeModality { tool.execute(project, arguments) }
+            val result = withIdeModality {
+                if (toolName in LONG_POLL_TOOLS) {
+                    tool.execute(project, executionArguments)
+                } else {
+                    withTimeoutOrNull(executionTimeoutMs) {
+                        tool.execute(project, executionArguments)
+                    }
+                }
+            } ?: return failed(
+                project, commandEntry, startTime,
+                "Tool '$toolName' timed out while waiting for the IDE or running the operation. " +
+                    "Close any modal dialog, wait for ide_index_status to report isDumbMode=false, " +
+                    "and retry with a narrower scope if searching. " +
+                    "For an edit, inspect the target file before retrying: a write already in progress may have completed."
+            )
             updateHistorySafely(
                 project = project,
                 commandEntry = commandEntry,

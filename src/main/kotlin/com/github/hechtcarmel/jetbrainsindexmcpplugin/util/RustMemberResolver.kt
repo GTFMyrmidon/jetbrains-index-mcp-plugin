@@ -79,6 +79,8 @@ class RustMemberResolver(private val project: Project) : MemberResolver {
         return results
     }
 
+    override fun resolveMember(element: PsiElement): ResolvedMember? = resolveDeclaration(element)
+
     private fun isRustContainer(element: PsiElement): Boolean {
         return rsStructItemClass?.isInstance(element) == true ||
                rsEnumItemClass?.isInstance(element) == true ||

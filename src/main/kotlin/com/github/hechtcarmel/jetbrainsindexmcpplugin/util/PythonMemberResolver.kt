@@ -97,6 +97,8 @@ class PythonMemberResolver(private val project: Project) : MemberResolver {
         return results
     }
 
+    override fun resolveMember(element: PsiElement): ResolvedMember? = resolveDeclaration(element)
+
     private fun getFileDeclarations(file: PsiElement): List<PsiElement> {
         return file.children.filter {
             pyFunctionClass?.isInstance(it) == true ||

@@ -24,6 +24,7 @@ object ParamNames {
     const val TARGET_DIRECTORY = "targetDirectory"
     const val REPLACE_ALL = "replaceAll"
     const val FORCE = "force"
+    const val DRY_RUN = "dryRun"
     const val TARGET_TYPE_CAMEL = "targetType"
     const val TARGET_TYPE = "target_type"
     const val OPTIMIZE_IMPORTS = "optimizeImports"
@@ -43,6 +44,7 @@ object ParamNames {
 
     // Symbol reference parameter
     const val SYMBOL = "symbol"
+    const val SYMBOL_ID = "symbolId"
 
     // Symbol search parameters
     const val QUERY = "query"
@@ -54,6 +56,9 @@ object ParamNames {
     const val REGEX = "regex"
     const val CURSOR = "cursor"
     const val INCLUDE_GENERATED = "includeGenerated"
+    const val INCLUDE_NODES = "includeNodes"
+    const val INCLUDE_SYMBOL_IDS = "includeSymbolIds"
+    const val MAX_SYMBOL_IDS = "maxSymbolIds"
 
     // SSR parameters
     const val SEARCH_PATTERN = "searchPattern"

@@ -27,14 +27,12 @@ class InsertMemberTool : AbstractMcpTool() {
         - {"file": "src/Main.java", "class": "Main", "content": "public String getFullName() {\n    return firstName + \" \" + lastName;\n}", "position": "after", "anchor": "getLastName"}
         - {"file": "src/Main.java", "class": "Main", "content": "private int age;", "position": "before", "anchor": "getName"}
         - {"file": "src/utils.kt", "content": "fun helper(): String = \"help\""}
-        - {"file": "src/base.py", "class": "Base", "content": "def new_method(self):\n    pass"}
-        - {"file": "src/base.js", "class": "Base", "content": "newMethod() {}"}
     """.trimIndent()
 
     override val inputSchema = SchemaBuilder.tool()
         .projectPath()
         .file(description = "Path to file relative to project root. REQUIRED.")
-        .stringProperty(ParamNames.CLASS, "Class/interface name to insert into. Optional for top-level members (Kotlin, Python, JS/TS, Go, PHP, Rust).")
+        .stringProperty(ParamNames.CLASS, "Class/interface name to insert into. Optional for top-level members (Kotlin).")
         .stringProperty(ParamNames.CONTENT, "The complete member declaration to insert, including modifiers, type, name, and body.", required = true)
         .enumProperty(ParamNames.POSITION, "Where to insert relative to the anchor: 'before', 'after', 'first', or 'last' (default).", listOf("before", "after", "first", "last"))
         .stringProperty(ParamNames.ANCHOR, "Name of an existing member to insert before/after. Required when position is 'before' or 'after'.")
@@ -68,6 +66,7 @@ class InsertMemberTool : AbstractMcpTool() {
         val virtualFile = resolveFile(project, filePath)
             ?: return createErrorResult("File not found: $filePath")
         ensureWritable(virtualFile)?.let { return it }
+        syncFileForEdit(project, virtualFile)?.let { return it }
 
         val prep = suspendingReadAction {
             prepareInsertion(project, virtualFile, filePath, className, position, anchorName, anchorParamCount, anchorLine)
@@ -142,17 +141,17 @@ class InsertMemberTool : AbstractMcpTool() {
         var endLine = 0
         var error: String? = null
 
-        suspendingWriteAction(project, "Insert member") {
+        val saveError = suspendingWriteActionAndSave(project, "Insert member", prep.document) {
             if (!prep.psiFile.isValid) {
                 error =
                     "PSI file for '${prep.relativePath}' is no longer valid. The document may have been modified externally — retry the operation."
-                return@suspendingWriteAction
+                return@suspendingWriteActionAndSave
             }
             val docLength = prep.document.textLength
             if (prep.insertionOffset < 0 || prep.insertionOffset > docLength) {
                 error =
                     "Insertion offset ${prep.insertionOffset} is out of bounds (document length: ${docLength}). The document may have been modified externally — retry the operation."
-                return@suspendingWriteAction
+                return@suspendingWriteActionAndSave
             }
             prep.document.insertString(prep.insertionOffset, insertText)
             MemberEditingUtils.commitDocuments(project)
@@ -169,8 +168,7 @@ class InsertMemberTool : AbstractMcpTool() {
         if (error != null) {
             return createErrorResult(error!!)
         }
-
-        edtAction { MemberEditingUtils.saveToDisk() }
+        saveError?.let { return it }
 
         return createJsonResult(MemberEditResult(
             success = true,

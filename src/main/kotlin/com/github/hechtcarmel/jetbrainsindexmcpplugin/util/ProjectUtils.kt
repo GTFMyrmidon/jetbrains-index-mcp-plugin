@@ -11,6 +11,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -35,6 +36,23 @@ object ProjectUtils {
         return ProjectManager.getInstance().openProjects.firstOrNull { open ->
             !open.isDefault && open.basePath?.let { canonicalNormalizedPath(it) } == requested
         }
+    }
+
+    /**
+     * Returns the open project whose module content roots include every path in [roots]
+     * (already canonical and normalized), or null when none does. When several qualify, the
+     * one with the fewest content roots — the closest fit — wins.
+     */
+    fun findOpenProjectContainingRoots(roots: Set<String>): Project? {
+        if (roots.isEmpty()) return null
+        return ProjectManager.getInstance().openProjects
+            .filter { !it.isDefault && !it.isDisposed }
+            .mapNotNull { open ->
+                val openRoots = getModuleContentRoots(open).mapTo(HashSet()) { canonicalNormalizedPath(it) }
+                if (openRoots.containsAll(roots)) open to openRoots.size else null
+            }
+            .minByOrNull { (_, rootCount) -> rootCount }
+            ?.first
     }
 
     suspend fun awaitSmartMode(opened: Project): Boolean =
@@ -84,20 +102,28 @@ object ProjectUtils {
         }
     }
 
+    /**
+     * The path tools report for [virtualFile]: relative to [Project.basePath] when the file is
+     * under it, otherwise the file's absolute path. `AbstractMcpTool.resolveFile` accepts both
+     * forms back.
+     *
+     * Module content roots outside the base path are deliberately not stripped (issue #441).
+     * They are what `ide_open_workspace` produces (its aggregator project lives in the IDE
+     * system directory, so every repository is outside the base path), and what
+     * `ide_import_modules`, flat Maven layouts and Gradle included builds produce. Each Maven
+     * module is its own content root, so stripping reduced every module's sources to the same
+     * `src/main/...`: a path that named no file in particular, that the agent's own file tools
+     * could not open, and that collided wherever results are deduplicated by path.
+     */
     fun getRelativePath(project: Project, virtualFile: VirtualFile): String =
         getRelativePath(project, virtualFile.path)
 
+    /** [getRelativePath] for a path that has no [VirtualFile], such as one parsed from build output. */
     fun getRelativePath(project: Project, absolutePath: String): String {
-        val normalizedAbsolute = ProjectResolver.normalizePath(absolutePath)
-        val basePath = project.basePath?.let { ProjectResolver.normalizePath(it) }
-        if (basePath != null && (normalizedAbsolute == basePath || normalizedAbsolute.startsWith("$basePath/"))) {
-            return normalizedAbsolute.removePrefix(basePath).removePrefix("/")
-        }
-        val contentRootPath = findMatchingContentRoot(project, normalizedAbsolute)
-        if (contentRootPath != null) {
-            return normalizedAbsolute.removePrefix(contentRootPath).removePrefix("/")
-        }
-        return normalizedAbsolute
+        // VirtualFile paths and Project.basePath use '/' on every OS; Windows build tools report '\'.
+        val path = if (SystemInfo.isWindows) absolutePath.replace('\\', '/') else absolutePath
+        val basePath = project.basePath ?: return path
+        return ProjectPathMatcher.relativePath(path, basePath) ?: path
     }
 
     fun resolveProjectFile(project: Project, relativePath: String): VirtualFile? {
@@ -118,9 +144,9 @@ object ProjectUtils {
             // Fall back to path-based checks below when file index is unavailable.
         }
 
-        val basePath = project.basePath ?: return false
         val filePath = virtualFile.path
-        if (filePath == basePath || filePath.startsWith("$basePath/")) return true
+        val basePath = project.basePath
+        if (basePath != null && ProjectPathMatcher.relativePath(filePath, basePath) != null) return true
 
         // Also check module content roots for workspace sub-projects
         return findMatchingContentRoot(project, filePath) != null
@@ -167,28 +193,8 @@ object ProjectUtils {
      * Finds the content root path that contains the given absolute file path.
      * Returns null if no content root matches.
      */
-    private fun findMatchingContentRoot(project: Project, absolutePath: String): String? {
-        try {
-            val normalizedAbsolute = ProjectResolver.normalizePath(absolutePath)
-            val modules = ModuleManager.getInstance(project).modules
-            var bestMatch: String? = null
-            for (module in modules) {
-                val contentRoots = ModuleRootManager.getInstance(module).contentRoots
-                for (root in contentRoots) {
-                    val rootPath = ProjectResolver.normalizePath(root.path)
-                    if (normalizedAbsolute == rootPath || normalizedAbsolute.startsWith("$rootPath/")) {
-                        if (bestMatch == null || rootPath.length > bestMatch.length) {
-                            bestMatch = rootPath
-                        }
-                    }
-                }
-            }
-            return bestMatch
-        } catch (_: Exception) {
-            // ModuleManager may not be available in all contexts
-        }
-        return null
-    }
+    internal fun findMatchingContentRoot(project: Project, absolutePath: String): String? =
+        ProjectPathMatcher.findMatchingRoot(absolutePath, getModuleContentRoots(project))
 
     /**
      * Tries to resolve a relative path against each module content root.

@@ -249,8 +249,7 @@ object ProjectResolver {
 
     /**
      * Finds the project owning a module content root that contains the given path,
-     * preferring the longest (most specific) matching root — mirroring
-     * [ProjectUtils.getRelativePath]'s content-root matching for file paths.
+     * preferring the longest (most specific) matching root.
      */
     private fun findProjectByContentRootPrefix(projects: List<Project>, normalizedPath: String): Project? {
         var bestProject: Project? = null
@@ -373,7 +372,7 @@ object ProjectResolver {
                         return buildErrorResult("Failed to reopen managed project: $normalizedPath", projectPath)
                     }
                 modeService.markReopened(normalizedPath)
-                modeService.resetInactivityTimer(project)
+                modeService.resetInactivityTimer(project, "auto-open")
                 return Result(project = project)
             }
 
@@ -418,7 +417,7 @@ object ProjectResolver {
             val project = reopenAndAwaitSmartMode(fallbackPath)
             if (project != null) {
                 modeService?.markReopened(fallbackPath)
-                modeService?.resetInactivityTimer(project)
+                modeService?.resetInactivityTimer(project, "auto-open")
                 return Result(project = project)
             }
             LOG.warn("reopenAndAwaitSmartMode returned null for null-path fallback: $fallbackPath — ProjectManagerEx.openProjectAsync failed or was cancelled")

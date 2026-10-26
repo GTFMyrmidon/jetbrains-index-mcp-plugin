@@ -39,8 +39,8 @@ If both `mcp__intellij-index__*` (this plugin) and `mcp__intellij__*` (JetBrains
 | Task | Use IDE Tool | Use Built-In Tool |
 |------|-------------|-------------------|
 | Find all usages of a method/class/variable | `ide_find_references` | Never - grep misses renamed imports, aliases, overrides |
-| Go to a symbol's definition | `ide_find_definition` | Never - grep can't resolve through imports/generics |
-| Check a symbol's resolved signature or docs | `ide_symbol_info` | Never - source text does not resolve short type names, and carries no doc comment |
+| Go to a symbol's definition | `ide_find_definition` (returns and accepts a reusable `symbolId`) | Never - grep can't resolve through imports/generics |
+| Check a symbol's resolved signature or docs | `ide_symbol_info` (returns and accepts a reusable `symbolId`) | Never - source text does not resolve short type names, and carries no doc comment |
 | Find a class by name | `ide_find_class` | Only if IDE unavailable |
 | Find a file by name | `ide_find_file` | `Glob` is fine for simple patterns |
 | Search for text in code | `ide_search_text` | `Grep` is fine when IDE context filtering is unnecessary |
@@ -80,13 +80,27 @@ The built-in `mcp__intellij__*` MCP is **not** a fallback for `mcp__intellij-ind
 
 ## File Sync Rule
 
-If you created or modified files outside the IDE (via Write/Edit tools) and an IDE search tool returns incomplete/missing results, call `ide_sync_files` first, then retry.
+If you created or modified files outside the IDE (via Write/Edit tools) and an IDE search tool returns incomplete/missing results, call `ide_sync_files` first, then retry. It accepts relative paths (project base first, then module content roots) and absolute paths inside those roots. The whole batch is validated before refresh; known deleted targets refresh through their nearest existing parent.
 
 ```json
 { "paths": ["src/new_file.java", "src/modified_file.java"] }
 ```
 
 Omit `paths` to sync the entire project.
+
+## Opening Projects
+
+Every project or workspace you open is another IDE window that indexes its code and stays in memory, so pick the call by what you need and make it once. Both tools are disabled by default (see the routing rule above).
+
+| Situation | Call |
+|-----------|------|
+| One repository, Maven or Gradle | `ide_open_project` with `{"path": "/abs/repo", "autoLink": true}` |
+| One repository, anything else (TypeScript, Python, plain directory) | `ide_open_project` with `{"path": "/abs/repo"}` |
+| Several Maven repositories that must see each other (cross-repository references, rename, move) | **One** `ide_open_workspace` call listing **all** of them in `modules`, or their parent directory in `path` |
+| A repository that is already a module of an open workspace | Nothing to open: pass the repository directory as `project_path` |
+| A git worktree | `ide_open_project` with the worktree path (see below) |
+
+**Never call `ide_open_workspace` once per repository, or again with a different subset of the same repositories.** Each distinct set gets its own window and its own directory under the IDE's `ide-workspaces/` folder, and no window sees the repositories outside its set. `ide_open_workspace` refuses a single Maven project and points you to `ide_open_project`; if an open project already contains every requested repository as a module, it reuses that window instead of opening another. If you later need one more repository in a workspace, call `ide_open_workspace` once with the complete list, then close the old workspace with `ide_close_project`.
 
 ## Git Worktrees
 
@@ -102,8 +116,16 @@ When working in a git worktree (e.g., `/project/.claude/worktrees/agent-xyz` or 
 2. **Project file paths are relative** to project root (e.g., `src/main/java/App.java`, NOT absolute paths). If an IDE tool returns a dependency/library file, keep the returned absolute path or `jar://` URL unchanged when passing it back to read-only navigation tools or `ide_read_file`
 3. **Column must point to the symbol name**, not whitespace or punctuation. For `public void myMethod()`, column should land on `m` of `myMethod`. For dotted expressions like `json.dumps()` or `os.path.join()`, put the column on the member token (`dumps`, `join`) when you want the member definition rather than the module/package.
 4. **project_path is only needed** for multi-project workspaces. Omit for single-project setups. When needed, use the absolute path to the project root.
-5. **Use built-in search scope intentionally**: `ide_find_references`, `ide_find_implementations`, `ide_type_hierarchy`, `ide_call_hierarchy`, `ide_find_class`, `ide_find_file`, and `ide_find_symbol` accept `scope`. Use `project_files` for the default project-only view, `project_and_libraries` when dependency code matters, `project_production_files` to stay out of tests, and `project_test_files` when you want test-only results.
-6. **Narrow by directory with `paths`**: `ide_search_text`, `ide_find_references`, and `ide_structural_search_replace` accept `paths`, an array of project-relative globs where a leading `!` excludes — e.g. `{"paths": ["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]}`. Prefer one scoped call over a project-wide search you filter yourself: filtering client-side pays tokens for every discarded hit, and with pagination a whole page can be filtered away and look like an empty result. Composes with `scope` and `filePattern`.
+5. **Reuse exact targets with `symbolId`**: class, symbol, reference, implementation, and super-method searches return opaque handles for exact declarations. Definition, symbol-info, reference, implementation, and member-edit tools accept a nested `target` containing exactly one of `symbolId`, `position`, or `qualifiedName` + `language`; do not mix it with top-level selectors. A handle routes to its owning project when `project_path` is omitted and restorable source declarations survive edits or rename. Cached pages marked `stale` rebind exact handles when returned. Rediscover after `SYMBOL_ID_EXPIRED`; self-navigating synthetic targets expire after their backing file changes, and handles are non-canonical and must not be compared for symbol equality.
+6. **Preview risky refactorings first**: `ide_refactor_rename`, `ide_refactor_safe_delete`, and `ide_change_signature` accept `dryRun: true`. Inspect `canApply`, `plannedChange`, `affectedFiles`, usage/conflict counts, and `warnings`. Preview does not write or save files and creates no undo entry. Apply with a second call only after reviewing the result.
+7. **Use built-in search scope intentionally**: `ide_find_references`, `ide_find_implementations`, `ide_type_hierarchy`, `ide_call_hierarchy`, `ide_find_class`, `ide_find_file`, and `ide_find_symbol` accept `scope`. Use `project_files` for the default project-only view, `project_and_libraries` when dependency code matters, `project_production_files` to stay out of tests, and `project_test_files` when you want test-only results.
+8. **Narrow by directory with `paths`**: `ide_search_text`, `ide_find_references`, and `ide_structural_search_replace` accept `paths`, an array of project-relative globs where a leading `!` excludes — e.g. `{"paths": ["src/main/kotlin/**/handlers/**", "!**/*Test.kt"]}`. Prefer one scoped call over a project-wide search you filter yourself: filtering client-side pays tokens for every discarded hit, and with pagination a whole page can be filtered away and look like an empty result. Composes with `scope` and `filePattern`.
+
+`ide_file_structure` keeps the legacy `structure` response by default and avoids returning a
+structured-node payload or allocating handles. Use `includeNodes=true` for structured declarations,
+and `includeSymbolIds=true` when exact handles are needed (it implies `includeNodes`). Handle
+allocation is opt-in and capped at 100 per response; lower it with `maxSymbolIds` (1–100). Large
+responses report `symbolIdsTruncated` and `symbolIdsOmitted`.
 
 ## Tool Selection by Task
 
@@ -123,13 +145,15 @@ When working in a git worktree (e.g., `/project/.claude/worktrees/agent-xyz` or 
 3. `ide_search_text` - substring text search across project (regex via `"regex": true`)
 
 ### "I need to refactor"
-1. `ide_refactor_rename` - rename symbol + all references atomically
-2. `ide_move_file` - move file and let the IDE apply semantic updates when that language/backend supports them
-3. `ide_refactor_safe_delete` - delete with usage checking
-4. `ide_replace_text_in_file`, `ide_reformat_code` - apply project code style (disabled by default)
+1. Preview a rename, safe delete, or signature change with `dryRun: true`; inspect blockers and affected files
+2. `ide_refactor_rename` - rename symbol + all references atomically
+3. `ide_change_signature` - change method signature and update callers (Java, Kotlin, Python, JS/TS, Go, PHP, Rust; disabled by default)
+4. `ide_move_file` - move file and let the IDE apply semantic updates when that language/backend supports them
+5. `ide_refactor_safe_delete` - preview/delete an exact symbol target or file with usage checking
+6. `ide_replace_text_in_file`, `ide_reformat_code` - apply project code style (disabled by default)
 
 ### "I need to check for problems"
-1. `ide_diagnostics` - compiler errors, warnings, quick fixes for one file (plus build/test results)
+1. `ide_diagnostics` - compiler errors/warnings for one `file` or a small relative/in-project-absolute `files` batch; inspect each `state`/`reason`, and use `maxProblems` to bound output. Quick fixes and ranges are single-file only (plus build/test results)
 2. `ide_project_diagnostics` - batch/project scope including unopened files, with fail-closed coverage metadata (`complete` flag, per-file states); long analyses return an `analysisId` to poll (disabled by default)
 
 ### "I need to find implementations of an interface"
@@ -161,11 +185,13 @@ When working in a git worktree (e.g., `/project/.claude/worktrees/agent-xyz` or 
 
 10. **Using `ide_find_class` for methods/functions**: It searches classes only. Use `ide_search_text` for a quick word lookup.
 
+11. **Calling `ide_open_workspace` once per repository**: each call opens another window without cross-repository intelligence. Open one repository with `ide_open_project`; combine several Maven repositories with a single `ide_open_workspace` call that lists all of them. See [Opening Projects](#opening-projects).
+
 ## Lifecycle Management
 
 When multiple projects are open simultaneously, the lifecycle manager sleeps and wakes them based on window focus and MCP activity. It is opt-in and disabled by default — enable "Enable lifecycle management" in Settings → Tools → Index MCP Server. Once enabled, projects enroll automatically on first MCP use.
 
-**States:** `active` (full IDE) → `background` (Power Save on) → `dormant` (editors closed, PSI cache freed) → `closed` (fully unloaded). Projects auto-reopen transparently when an MCP tool targets a closed project.
+**States:** `active` (full IDE) → `background` (Power Save on) → `dormant` (editor tabs closed until the window regains focus, PSI cache freed) → `closed` (fully unloaded). Every MCP tool call restarts a project's idle countdown. Projects auto-reopen transparently when an MCP tool targets a closed project.
 
 `ide_project_status` is the read-only entry point — **enabled by default**. Use it to see all open and managed projects and their current modes.
 
@@ -179,7 +205,8 @@ These tools exist but are disabled by default. They are omitted from `tools/list
 
 `ide_build_project`, `ide_change_signature`, `ide_close_project`, `ide_convert_java_to_kotlin`, `ide_create_file`, `ide_create_module`, `ide_edit_member`, `ide_enroll_all_projects`, `ide_file_structure`, `ide_find_symbol`, `ide_get_active_file`, `ide_get_project_modes`, `ide_import_modules`, `ide_insert_member`, `ide_install_plugin`, `ide_lifecycle_log`, `ide_link_build_system`, `ide_list_tests`, `ide_open_file`, `ide_open_project`, `ide_open_workspace`, `ide_optimize_imports`, `ide_project_diagnostics`, `ide_read_file`, `ide_reformat_code`, `ide_release_all_projects`, `ide_release_project`, `ide_reload_project`, `ide_replace_member`, `ide_replace_text_in_file`, `ide_restart`, `ide_run_tests`, `ide_set_all_project_modes`, `ide_set_lifecycle_log_file`, `ide_set_power_save_mode`, `ide_set_project_mode`, `ide_structural_search_replace`, `ide_symbol_info`
 
-Note: `ide_restart` terminates the MCP connection — reconnect your client after calling it.
+Note: `ide_restart` is not a terminal step. The MCP server is down only while the IDE relaunches (usually well under a minute): poll `ide_index_status` until it answers, then continue. If nothing answers after a few minutes the restart was probably intercepted (for example by a save dialog) — report it instead of polling forever.
+Note: after a restart, Streamable HTTP clients need no reconnect (every call is an independent POST) but legacy SSE clients must reopen the `/index-mcp/sse` stream; symbol handles and search cursors issued before the restart are invalid; and after `ide_install_plugin`, refresh the tool list so changed schemas are picked up.
 Note: `ide_close_project` refuses to close the last open project; `ide_open_project` requires an absolute path and may take up to `timeoutSeconds` (default 600) while the project indexes.
 
 ## Enforcing IDE Tool Usage with Hooks
@@ -191,3 +218,12 @@ See [claude-code-hooks.md](https://github.com/hechtcarmel/jetbrains-index-mcp-pl
 ## Detailed Tool Parameters
 
 For complete parameter reference with types, defaults, and return formats, see [tools-reference.md](references/tools-reference.md).
+
+### Bounded hierarchy pages with legacy tree compatibility
+
+Without `maxNodes` or `cursor`, call/type hierarchies keep nested trees and legacy limits.
+Explicit pagination returns bounded breadth-first pages with traversal-local `nodeId`,
+`parentId`, and `depth`. Continuations are scoped to the project, tool, and server session.
+A continuation budget limit preserves the computed page and reports `truncationReason`;
+narrow the query when `hasMore=true` has no cursor. Cancellation and indexing transitions
+propagate through reflective handlers instead of completing an empty hierarchy.

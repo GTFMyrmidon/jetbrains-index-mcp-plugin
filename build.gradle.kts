@@ -16,6 +16,8 @@ plugins {
 group = providers.gradleProperty("pluginGroup").get()
 version = providers.gradleProperty("pluginVersion").get()
 
+val kotlinPluginTests = providers.gradleProperty("kotlinPluginTests").map(String::toBoolean).orElse(false)
+
 // Set the JVM language level used to build the project.
 kotlin {
     jvmToolchain(21)
@@ -69,6 +71,10 @@ dependencies {
     implementation(libs.mcp.kotlin.sdk.server) { excludePlatformProvided() }
 
     implementation(libs.jtoon)
+    // Persistent collections let hierarchy continuation snapshots share unchanged storage across
+    // retriable cursor pages. The artifact itself is not platform-provided, so it is bundled; the
+    // exclusion only drops its transitive kotlin-stdlib, which the IDE already ships.
+    implementation(libs.kotlinx.collections.immutable) { excludePlatformProvided() }
 
     // Ktor engine. ktor-server-core arrives transitively from the SDK at the version the SDK was
     // compiled against, which is exactly what we want. CORS is not a dependency: the plugin
@@ -122,7 +128,31 @@ dependencies {
         // list is empty and the tool can only ever return "No test frameworks are registered" —
         // i.e. the tool is untestable. Test-scoped so production dependencies are unchanged.
         testBundledPlugin("JUnit")
+        if (kotlinPluginTests.get()) {
+            testBundledPlugin("org.jetbrains.kotlin")
+        }
     }
+}
+
+if (kotlinPluginTests.get()) {
+    kotlin.sourceSets.named("test") {
+        kotlin.srcDir("src/kotlinPluginTest/kotlin")
+    }
+    // Fixtures use reflection; the bundled plugin's newer metadata is not needed for compilation.
+    tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") {
+        libraries.setFrom(files(sourceSets.main.get().output, configurations.testCompileClasspath).filter {
+            !it.invariantSeparatorsPath.contains("/plugins/Kotlin/")
+        })
+    }
+}
+
+// All platform tests need the IDE's matching stdlib, not just opt-in Kotlin plugin tests.
+// PlatformTaskSupport also calls newer Kotlin APIs (e.g. sequenceOf(Object)); Gradle's
+// injected stdlib can shadow the IDE runtime and fail during modal progress/conflict discovery.
+configurations.testRuntimeClasspath {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
 }
 
 // Configure IntelliJ Platform Gradle Plugin - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-extension.html

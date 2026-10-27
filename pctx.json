@@ -30,15 +30,15 @@
   "servers": [
     {
       "name": "jcodemunch",
-      "command": "/home/vince/.local/bin/jcodemunch-mcp"
+      "url": "http://127.0.0.1:8848/mcp"
     },
     {
       "name": "jdocmunch",
-      "command": "/home/vince/.local/bin/jdocmunch-mcp"
+      "url": "http://127.0.0.1:8849/mcp"
     },
     {
       "name": "ide-index",
-      "url": "http://127.0.0.1:29170/index-mcp/streamable-http"
+      "url": "http://127.0.0.1:29173/index-mcp/streamable-http"
     },
     {
       "name": "ide-debugger",
